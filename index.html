@@ -355,6 +355,20 @@
     white-space: nowrap;
   }
   .add-chapter-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+  .delete-chapter-btn {
+    background: none;
+    border: 1px solid var(--red);
+    color: var(--red);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    letter-spacing: 0.06em;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .delete-chapter-btn:hover { background: var(--red-dim); }
 
   /* ── MATH BLOCKS ── */
   .math-block {
@@ -656,6 +670,8 @@
   .prob-action-btn.mark-done:hover { background: var(--green-dim); }
   .prob-action-btn.mark-stuck { border-color: var(--red); color: var(--red); }
   .prob-action-btn.mark-stuck:hover { background: var(--red-dim); }
+  .prob-action-btn.delete { border-color: var(--red); color: var(--red); }
+  .prob-action-btn.delete:hover { background: var(--red-dim); }
 
   .add-problem-row { display: flex; gap: 10px; margin-top: 20px; }
   .add-problem-input {
@@ -1177,6 +1193,12 @@ function preprocessTex(tex) {
   const docEnd = tex.indexOf('\\end{document}');
   if (docEnd !== -1) tex = tex.slice(0, docEnd);
 
+  // If no explicit document wrapper, trim obvious preamble before first heading.
+  if (docStart === -1) {
+    const firstBody = tex.search(/\\(?:chapter|section|subsection)\*?\{/);
+    if (firstBody > 0) tex = tex.slice(firstBody);
+  }
+
   // Strip \newcommand definitions (they define macros, not content)
   tex = tex.replace(/\\newcommand\{[^}]*\}\{[^{}]*\}/g, '');
   tex = tex.replace(/\\newcommand\{[^}]*\}\[[^\]]*\]\{[^{}]*\}/g, '');
@@ -1225,10 +1247,40 @@ function preprocessTex(tex) {
   // Convert \axitem{num}{type: title} using brace-balanced extraction
   tex = replaceLatexCmd(tex, 'axitem', 2, (num, typeTitle) => `\n__AXITEM__${num}__${typeTitle}\n`);
 
+  // Strip optional [..] args on section commands so they parse cleanly
+  tex = tex
+    .replace(/\\chapter\\*?\[[^\]]*\]\{/g, '\\chapter{')
+    .replace(/\\section\\*?\[[^\]]*\]\{/g, '\\section{')
+    .replace(/\\subsection\\*?\[[^\]]*\]\{/g, '\\subsection{')
+    .replace(/\\subsubsection\\*?\[[^\]]*\]\{/g, '\\subsubsection{');
+
   // Standalone: \textbf{1.2}\quad\textit{type: title}
-  tex = tex.replace(/\\textbf\{(\d+\.\d+)\}\\quad\\textit\{([^}]+)\}/g, (_, num, typeTitle) => {
-    return `\n__AXITEM__${num}__${typeTitle}\n`;
-  });
+  // Use brace-balanced extraction so titles containing nested braces/math (e.g. $\mathbf{R}^2$)
+  // are captured fully instead of being truncated at the first `}`.
+  tex = (() => {
+    const re = /\\textbf\{(\d+\.\d+)\}\\quad\\textit(?=\{)/g;
+    const out = [];
+    let last = 0;
+    let m;
+    while ((m = re.exec(tex)) !== null) {
+      out.push(tex.slice(last, m.index));
+      const num = m[1];
+      const start = m.index + m[0].length;
+      const parsed = extractBraceArgs(tex, start);
+      if (parsed.args.length >= 1) {
+        out.push(`\n__AXITEM__${num}__${parsed.args[0]}\n`);
+        last = parsed.endPos;
+        re.lastIndex = parsed.endPos;
+      } else {
+        // Fallback: leave original text untouched if malformed
+        out.push(m[0]);
+        last = m.index + m[0].length;
+        re.lastIndex = last;
+      }
+    }
+    out.push(tex.slice(last));
+    return out.join('');
+  })();
 
   // subsubsection/paragraph → named subhead marker
   tex = tex
@@ -1480,18 +1532,26 @@ function loadFromPaste() {
   if(!tex.trim()) { showToast('Paste some LaTeX first!'); return; }
   loadTeX(tex, 'Pasted Content');
 }
+
+
+function getChapterLabel(tex, fallbackName='Chapter') {
+  const src = (tex || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const m = src.match(/\\section\*?\{([^}]*)\}/);
+  if (m && m[1]) {
+    return cleanInlineLatex(m[1]).replace(/\s+/g, ' ').trim();
+  }
+  return (fallbackName || 'Chapter').replace(/\.tex$/,'').replace(/_/g,' ').trim();
+}
 function loadTeX(tex, name, append=false) {
   const sections = parseLatex(tex);
   if(sections.length===0) { showToast('No sections or blocks found. Check your LaTeX structure.'); return; }
   const course = state.courses.find(c=>c.id===state.activeCourse);
+  const chapterLabel = getChapterLabel(tex, name);
   if (append && course.sections.length > 0) {
-    // Tag sections with chapter name for display
-    const chapterLabel = name.replace(/\.tex$/,'').replace(/_/g,' ');
     sections.forEach(s => { if (!s.chapter) s.chapter = chapterLabel; });
     course.sections = [...course.sections, ...sections];
     showToast(`Added ${sections.length} section${sections.length>1?'s':''} from ${chapterLabel}!`);
   } else {
-    const chapterLabel = name.replace(/\.tex$/,'').replace(/_/g,' ');
     sections.forEach(s => { if (!s.chapter) s.chapter = chapterLabel; });
     course.sections = sections;
     showToast(`Loaded ${sections.length} section${sections.length>1?'s':''}!`);
@@ -1732,6 +1792,7 @@ function loadSection(idx) {
         <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
         <div class="progress-label">${pct}% complete</div>
         <button class="add-chapter-btn" onclick="openChapterModal()" title="Add another chapter">+ Chapter</button>
+        <button class="delete-chapter-btn" onclick="deleteChapter(${idx})" title="Delete this chapter">Delete Chapter</button>
       </div>
     </div>
     ${renderBlocks(section.blocks, idx)}
@@ -1745,6 +1806,32 @@ function loadSection(idx) {
   renderTOC();
   renderMath();
   markStudyDay();
+}
+
+function deleteChapter(sectionIdx) {
+  const course = state.courses.find(c => c.id === state.activeCourse);
+  const section = course?.sections?.[sectionIdx];
+  if (!course || !section) return;
+  const chapterLabel = section.chapter || section.title || `Section ${sectionIdx + 1}`;
+  if (!confirm(`Delete chapter "${chapterLabel}" and its sections?`)) return;
+
+  const kept = course.sections.filter(s => (s.chapter || '') !== (section.chapter || ''));
+  const removed = course.sections.length - kept.length;
+  course.sections = kept;
+
+  if (course.sections.length === 0) {
+    state.activeSection = null;
+    document.getElementById('upload-screen').style.display = '';
+    document.getElementById('reader-content').style.display = 'none';
+    renderTOC();
+    showToast(`Deleted ${removed} section${removed!==1?'s':''}.`);
+    return;
+  }
+
+  const nextIdx = Math.min(sectionIdx, course.sections.length - 1);
+  renderTOC();
+  loadSection(nextIdx);
+  showToast(`Deleted chapter ${chapterLabel}.`);
 }
 
 function renderBlocks(blocks, sectionIdx) {
@@ -1863,6 +1950,20 @@ function addProblem() {
   renderProblems();
 }
 
+function deleteProblem(id) {
+  const p = problems.find(x => x.id === id);
+  if (!p) return;
+  if (!confirm(`Delete ${p.title}?`)) return;
+  if (problemTimers[id]) { clearInterval(problemTimers[id]); delete problemTimers[id]; }
+  problems = problems.filter(x => x.id !== id);
+  problems.forEach((x, i) => {
+    x.num = i + 1;
+    if (!x.title || /^Problem\s+\d+$/i.test(x.title)) x.title = `Problem ${i + 1}`;
+  });
+  renderProblems();
+  showToast('Problem deleted.');
+}
+
 function renderProblems() {
   const list = document.getElementById('problem-list');
   if(problems.length===0) {
@@ -1904,6 +2005,7 @@ function renderProblems() {
           <button class="prob-action-btn mark-done" onclick="setProblemStatus(${p.id},'done')">✓ Mark Solved</button>
           <button class="prob-action-btn mark-stuck" onclick="setProblemStatus(${p.id},'stuck')">Stuck</button>
           <button class="prob-action-btn" onclick="setProblemStatus(${p.id},'todo')">Reset Status</button>
+          <button class="prob-action-btn delete" onclick="deleteProblem(${p.id})">Delete</button>
         </div>
       </div>
     </div>`).join('');
