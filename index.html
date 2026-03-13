@@ -8,6 +8,9 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script defer src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+<script defer src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
+<script defer src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
 <style>
   :root {
     /* Light mode (default) */
@@ -355,6 +358,20 @@
     white-space: nowrap;
   }
   .add-chapter-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+  .delete-chapter-btn {
+    background: none;
+    border: 1px solid var(--red);
+    color: var(--red);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    letter-spacing: 0.06em;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .delete-chapter-btn:hover { background: var(--red-dim); }
 
   /* ── MATH BLOCKS ── */
   .math-block {
@@ -656,6 +673,8 @@
   .prob-action-btn.mark-done:hover { background: var(--green-dim); }
   .prob-action-btn.mark-stuck { border-color: var(--red); color: var(--red); }
   .prob-action-btn.mark-stuck:hover { background: var(--red-dim); }
+  .prob-action-btn.delete { border-color: var(--red); color: var(--red); }
+  .prob-action-btn.delete:hover { background: var(--red-dim); }
 
   .add-problem-row { display: flex; gap: 10px; margin-top: 20px; }
   .add-problem-input {
@@ -864,6 +883,29 @@
   .theme-toggle .toggle-icon { font-size: 14px; }
 
   .header-right { display: flex; align-items: center; gap: 12px; }
+  .auth-btn {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    cursor: pointer;
+    padding: 5px 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--text3);
+    transition: all 0.2s;
+    letter-spacing: 0.04em;
+  }
+  .auth-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+  .auth-status {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--text3);
+    letter-spacing: 0.04em;
+    max-width: 180px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
   /* Scrollbar */
   ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -888,6 +930,9 @@
     <button class="theme-toggle" onclick="toggleTheme()" id="theme-btn">
       <span class="toggle-icon" id="theme-icon">☀️</span><span id="theme-label">Light</span>
     </button>
+    <button class="auth-btn" id="auth-btn" onclick="openAuthModal()">Sign In</button>
+    <button class="auth-btn" id="auth-signout-btn" onclick="signOutUser()" style="display:none;">Sign Out</button>
+    <div class="auth-status" id="auth-status">Cloud sync off</div>
     <div class="streak-badge">🔥 <span id="streak-count">0</span> day streak</div>
   </div>
 </header>
@@ -989,6 +1034,24 @@
   </div>
 </div>
 
+<!-- Auth Modal -->
+<div class="modal-overlay" id="auth-modal">
+  <div class="modal" style="max-width:520px;">
+    <h3>Sign In & Cloud Sync</h3>
+    <p style="color:var(--text3);font-size:14px;margin-bottom:12px;">Use Google or email/password. Your courses, notes, and problem work will sync to Firestore.</p>
+    <input type="email" id="auth-email" placeholder="Email">
+    <input type="password" id="auth-password" placeholder="Password">
+    <div class="modal-actions" style="justify-content:space-between;">
+      <button class="modal-cancel" onclick="signInWithGoogle()">Google</button>
+      <div style="display:flex; gap:10px;">
+        <button class="modal-cancel" onclick="closeModal('auth-modal')">Close</button>
+        <button class="modal-confirm" onclick="signInWithEmail()">Sign In</button>
+        <button class="modal-confirm" onclick="registerWithEmail()">Register</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Add Chapter Modal -->
 <div class="modal-overlay" id="add-chapter-modal">
   <div class="modal" style="max-width:580px;">
@@ -1054,6 +1117,177 @@ const state = {
   timers: {},
 };
 
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAVWcp_hNpflt9gWkjcm81AGzjKDGEF2-s",
+  authDomain: "axiom-study.firebaseapp.com",
+  projectId: "axiom-study",
+  storageBucket: "axiom-study.firebasestorage.app",
+  messagingSenderId: "995705908844",
+  appId: "1:995705908844:web:e405a240129ced8ccd7249"
+};
+
+const syncState = {
+  app: null,
+  auth: null,
+  db: null,
+  user: null,
+  dirty: false,
+  saveTimer: null,
+  loadedFromCloud: false,
+};
+
+function openAuthModal() { document.getElementById('auth-modal').classList.add('open'); }
+
+function updateAuthUI() {
+  const status = document.getElementById('auth-status');
+  const signInBtn = document.getElementById('auth-btn');
+  const signOutBtn = document.getElementById('auth-signout-btn');
+  if (!status || !signInBtn || !signOutBtn) return;
+  if (syncState.user) {
+    signInBtn.style.display = 'none';
+    signOutBtn.style.display = '';
+    status.textContent = `Sync on: ${syncState.user.email || syncState.user.displayName || 'Signed in'}`;
+  } else {
+    signInBtn.style.display = '';
+    signOutBtn.style.display = 'none';
+    status.textContent = 'Cloud sync off';
+  }
+}
+
+function markCloudDirty() {
+  if (!syncState.user || !syncState.db) return;
+  syncState.dirty = true;
+  if (syncState.saveTimer) clearTimeout(syncState.saveTimer);
+  syncState.saveTimer = setTimeout(saveToCloud, 900);
+}
+
+function snapshotForCloud() {
+  return {
+    state: {
+      courses: state.courses,
+      activeCourse: state.activeCourse,
+      activeSection: state.activeSection,
+      streak: state.streak,
+      studyDays: state.studyDays,
+      sectionsRead: state.sectionsRead,
+      problemsSolved: state.problemsSolved,
+    },
+    problems,
+    updatedAtMs: Date.now(),
+  };
+}
+
+async function saveToCloud() {
+  if (!syncState.user || !syncState.db || !syncState.dirty) return;
+  syncState.dirty = false;
+  try {
+    await syncState.db.collection('users').doc(syncState.user.uid).collection('app').doc('state').set(snapshotForCloud(), { merge: true });
+    const status = document.getElementById('auth-status');
+    if (status) status.textContent = `Synced: ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    console.error('saveToCloud failed', e);
+    const status = document.getElementById('auth-status');
+    if (status) status.textContent = 'Sync failed';
+  }
+}
+
+async function loadFromCloud() {
+  if (!syncState.user || !syncState.db) return;
+  try {
+    const doc = await syncState.db.collection('users').doc(syncState.user.uid).collection('app').doc('state').get();
+    if (!doc.exists) return;
+    const data = doc.data() || {};
+    if (data.state) {
+      const src = data.state;
+      state.courses = Array.isArray(src.courses) && src.courses.length ? src.courses : state.courses;
+      state.activeCourse = src.activeCourse || state.courses[0]?.id || 'mat217';
+      state.activeSection = Number.isInteger(src.activeSection) ? src.activeSection : null;
+      state.streak = src.streak || 0;
+      state.studyDays = Array.isArray(src.studyDays) ? src.studyDays : [];
+      state.sectionsRead = src.sectionsRead || 0;
+      state.problemsSolved = src.problemsSolved || 0;
+    }
+    problems = Array.isArray(data.problems) ? data.problems : [];
+    renderCourses();
+    renderTOC();
+    renderProblems();
+    if (state.activeCourse) {
+      const course = state.courses.find(c => c.id === state.activeCourse);
+      if (course && course.sections.length) loadSection(Math.max(0, Math.min(state.activeSection || 0, course.sections.length - 1)));
+    }
+    renderProgress();
+    syncState.loadedFromCloud = true;
+    showToast('Loaded your cloud data.');
+  } catch (e) {
+    console.error('loadFromCloud failed', e);
+    showToast('Could not load cloud data.');
+  }
+}
+
+async function signInWithGoogle() {
+  if (!syncState.auth) return;
+  try {
+    const provider = new firebase.auth.GoogleAuthProvider();
+    await syncState.auth.signInWithPopup(provider);
+    closeModal('auth-modal');
+  } catch (e) {
+    console.error(e);
+    showToast('Google sign-in failed.');
+  }
+}
+
+async function signInWithEmail() {
+  if (!syncState.auth) return;
+  const email = document.getElementById('auth-email').value.trim();
+  const pw = document.getElementById('auth-password').value;
+  if (!email || !pw) { showToast('Enter email + password.'); return; }
+  try {
+    await syncState.auth.signInWithEmailAndPassword(email, pw);
+    closeModal('auth-modal');
+  } catch (e) {
+    console.error(e);
+    showToast('Email sign-in failed.');
+  }
+}
+
+async function registerWithEmail() {
+  if (!syncState.auth) return;
+  const email = document.getElementById('auth-email').value.trim();
+  const pw = document.getElementById('auth-password').value;
+  if (!email || !pw) { showToast('Enter email + password.'); return; }
+  try {
+    await syncState.auth.createUserWithEmailAndPassword(email, pw);
+    closeModal('auth-modal');
+  } catch (e) {
+    console.error(e);
+    showToast('Registration failed.');
+  }
+}
+
+async function signOutUser() {
+  if (!syncState.auth) return;
+  await saveToCloud();
+  await syncState.auth.signOut();
+}
+
+function initFirebaseSync() {
+  if (!window.firebase) {
+    console.warn('Firebase SDK not loaded');
+    return;
+  }
+  syncState.app = firebase.initializeApp(firebaseConfig);
+  syncState.auth = firebase.auth();
+  syncState.db = firebase.firestore();
+  syncState.auth.onAuthStateChanged(async user => {
+    syncState.user = user || null;
+    updateAuthUI();
+    if (syncState.user) {
+      await loadFromCloud();
+    }
+  });
+}
+
 // ── TABS ──
 function switchTab(tab) {
   ['reader','pset','progress'].forEach(t => {
@@ -1100,6 +1334,7 @@ function addCourse() {
   renderTOC();
   document.getElementById('upload-screen').style.display='';
   document.getElementById('reader-content').style.display='none';
+  markCloudDirty();
 }
 
 // ── LaTeX PREPROCESSOR ──
@@ -1177,6 +1412,12 @@ function preprocessTex(tex) {
   const docEnd = tex.indexOf('\\end{document}');
   if (docEnd !== -1) tex = tex.slice(0, docEnd);
 
+  // If no explicit document wrapper, trim obvious preamble before first heading.
+  if (docStart === -1) {
+    const firstBody = tex.search(/\\(?:chapter|section|subsection)\*?\{/);
+    if (firstBody > 0) tex = tex.slice(firstBody);
+  }
+
   // Strip \newcommand definitions (they define macros, not content)
   tex = tex.replace(/\\newcommand\{[^}]*\}\{[^{}]*\}/g, '');
   tex = tex.replace(/\\newcommand\{[^}]*\}\[[^\]]*\]\{[^{}]*\}/g, '');
@@ -1225,10 +1466,40 @@ function preprocessTex(tex) {
   // Convert \axitem{num}{type: title} using brace-balanced extraction
   tex = replaceLatexCmd(tex, 'axitem', 2, (num, typeTitle) => `\n__AXITEM__${num}__${typeTitle}\n`);
 
+  // Strip optional [..] args on section commands so they parse cleanly
+  tex = tex
+    .replace(/\\chapter\\*?\[[^\]]*\]\{/g, '\\chapter{')
+    .replace(/\\section\\*?\[[^\]]*\]\{/g, '\\section{')
+    .replace(/\\subsection\\*?\[[^\]]*\]\{/g, '\\subsection{')
+    .replace(/\\subsubsection\\*?\[[^\]]*\]\{/g, '\\subsubsection{');
+
   // Standalone: \textbf{1.2}\quad\textit{type: title}
-  tex = tex.replace(/\\textbf\{(\d+\.\d+)\}\\quad\\textit\{([^}]+)\}/g, (_, num, typeTitle) => {
-    return `\n__AXITEM__${num}__${typeTitle}\n`;
-  });
+  // Use brace-balanced extraction so titles containing nested braces/math (e.g. $\mathbf{R}^2$)
+  // are captured fully instead of being truncated at the first `}`.
+  tex = (() => {
+    const re = /\\textbf\{(\d+\.\d+)\}\\quad\\textit(?=\{)/g;
+    const out = [];
+    let last = 0;
+    let m;
+    while ((m = re.exec(tex)) !== null) {
+      out.push(tex.slice(last, m.index));
+      const num = m[1];
+      const start = m.index + m[0].length;
+      const parsed = extractBraceArgs(tex, start);
+      if (parsed.args.length >= 1) {
+        out.push(`\n__AXITEM__${num}__${parsed.args[0]}\n`);
+        last = parsed.endPos;
+        re.lastIndex = parsed.endPos;
+      } else {
+        // Fallback: leave original text untouched if malformed
+        out.push(m[0]);
+        last = m.index + m[0].length;
+        re.lastIndex = last;
+      }
+    }
+    out.push(tex.slice(last));
+    return out.join('');
+  })();
 
   // subsubsection/paragraph → named subhead marker
   tex = tex
@@ -1480,18 +1751,26 @@ function loadFromPaste() {
   if(!tex.trim()) { showToast('Paste some LaTeX first!'); return; }
   loadTeX(tex, 'Pasted Content');
 }
+
+
+function getChapterLabel(tex, fallbackName='Chapter') {
+  const src = (tex || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const m = src.match(/\\section\*?\{([^}]*)\}/);
+  if (m && m[1]) {
+    return cleanInlineLatex(m[1]).replace(/\s+/g, ' ').trim();
+  }
+  return (fallbackName || 'Chapter').replace(/\.tex$/,'').replace(/_/g,' ').trim();
+}
 function loadTeX(tex, name, append=false) {
   const sections = parseLatex(tex);
   if(sections.length===0) { showToast('No sections or blocks found. Check your LaTeX structure.'); return; }
   const course = state.courses.find(c=>c.id===state.activeCourse);
+  const chapterLabel = getChapterLabel(tex, name);
   if (append && course.sections.length > 0) {
-    // Tag sections with chapter name for display
-    const chapterLabel = name.replace(/\.tex$/,'').replace(/_/g,' ');
     sections.forEach(s => { if (!s.chapter) s.chapter = chapterLabel; });
     course.sections = [...course.sections, ...sections];
     showToast(`Added ${sections.length} section${sections.length>1?'s':''} from ${chapterLabel}!`);
   } else {
-    const chapterLabel = name.replace(/\.tex$/,'').replace(/_/g,' ');
     sections.forEach(s => { if (!s.chapter) s.chapter = chapterLabel; });
     course.sections = sections;
     showToast(`Loaded ${sections.length} section${sections.length>1?'s':''}!`);
@@ -1500,6 +1779,7 @@ function loadTeX(tex, name, append=false) {
   renderTOC();
   loadSection(append ? course.sections.length - sections.length : 0);
   markStudyDay();
+  markCloudDirty();
 }
 
 // ── LATEX → HTML RENDERER ──
@@ -1645,27 +1925,33 @@ function renderLatexContent(text) { return latexToHtml(text); }
 function renderProseText(text) { return latexToHtml(text); }
 
 function renderMath() {
-  if(window.renderMathInElement) {
-    renderMathInElement(document.getElementById('reader-content') || document.body, {
-      delimiters: [
-        {left:'$$',right:'$$',display:true},
-        {left:'$',right:'$',display:false},
-        {left:'\\[',right:'\\]',display:true},
-        {left:'\\(',right:'\\)',display:false},
-      ],
-      macros: {
-        '\\F': '\\mathbf{F}',
-        '\\R': '\\mathbf{R}',
-        '\\C': '\\mathbf{C}',
-        '\\nullspace': '\\operatorname{null}',
-        '\\range': '\\operatorname{range}',
-        '\\Lcal': '\\mathcal{L}',
-        '\\spa': '\\operatorname{span}',
-      },
-      throwOnError: false
-    });
-  }
+  if(!window.renderMathInElement) return;
+  const targets = [
+    document.getElementById('reader-content'),
+    document.getElementById('problem-list'),
+    document.getElementById('toc-area'),
+  ].filter(Boolean);
+  const opts = {
+    delimiters: [
+      {left:'$$',right:'$$',display:true},
+      {left:'$',right:'$',display:false},
+      {left:'\[',right:'\]',display:true},
+      {left:'\(',right:'\)',display:false},
+    ],
+    macros: {
+      '\F': '\mathbf{F}',
+      '\R': '\mathbf{R}',
+      '\C': '\mathbf{C}',
+      '\nullspace': '\operatorname{null}',
+      '\range': '\operatorname{range}',
+      '\Lcal': '\mathcal{L}',
+      '\spa': '\operatorname{span}',
+    },
+    throwOnError: false
+  };
+  for (const el of targets) renderMathInElement(el, opts);
 }
+
 
 // ── TOC ──
 function renderTOC() {
@@ -1732,6 +2018,7 @@ function loadSection(idx) {
         <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
         <div class="progress-label">${pct}% complete</div>
         <button class="add-chapter-btn" onclick="openChapterModal()" title="Add another chapter">+ Chapter</button>
+        <button class="delete-chapter-btn" onclick="deleteChapter(${idx})" title="Delete this chapter">Delete Chapter</button>
       </div>
     </div>
     ${renderBlocks(section.blocks, idx)}
@@ -1745,6 +2032,34 @@ function loadSection(idx) {
   renderTOC();
   renderMath();
   markStudyDay();
+}
+
+function deleteChapter(sectionIdx) {
+  const course = state.courses.find(c => c.id === state.activeCourse);
+  const section = course?.sections?.[sectionIdx];
+  if (!course || !section) return;
+  const chapterLabel = section.chapter || section.title || `Section ${sectionIdx + 1}`;
+  if (!confirm(`Delete chapter "${chapterLabel}" and its sections?`)) return;
+
+  const kept = course.sections.filter(s => (s.chapter || '') !== (section.chapter || ''));
+  const removed = course.sections.length - kept.length;
+  course.sections = kept;
+
+  if (course.sections.length === 0) {
+    state.activeSection = null;
+    document.getElementById('upload-screen').style.display = '';
+    document.getElementById('reader-content').style.display = 'none';
+    renderTOC();
+    showToast(`Deleted ${removed} section${removed!==1?'s':''}.`);
+    markCloudDirty();
+    return;
+  }
+
+  const nextIdx = Math.min(sectionIdx, course.sections.length - 1);
+  renderTOC();
+  loadSection(nextIdx);
+  showToast(`Deleted chapter ${chapterLabel}.`);
+  markCloudDirty();
 }
 
 function renderBlocks(blocks, sectionIdx) {
@@ -1845,14 +2160,39 @@ function handlePsetUpload(event) {
 }
 
 function parsePsetText(text) {
-  // Try to split into problems by common patterns
-  const splits = text.split(/(?:Problem\s+\d+|Exercise\s+\d+|\d+\.\s)/i).filter(s=>s.trim());
-  splits.forEach((s,i) => {
-    problems.push({ id: Date.now()+i, num: problems.length+1, title: `Problem ${problems.length+1}`, text: s.trim(), status: 'todo', work: '', hint: '' });
+  const src = (text || '').trim();
+  if (!src) return;
+
+  // Prefer explicit LaTeX problem environments when present.
+  const envMatches = [...src.matchAll(/\begin\{problem\}([\s\S]*?)\end\{problem\}/g)];
+  let chunks = [];
+  if (envMatches.length) {
+    chunks = envMatches.map(m => m[1].trim()).filter(Boolean);
+  } else {
+    // Fallback split by common prefixes.
+    chunks = src
+      .split(/(?:^|\n)\s*(?:Problem\s+\d+|Exercise\s+[\w.]+|\d+\.\s)/i)
+      .map(s => s.trim())
+      .filter(Boolean);
+    if (!chunks.length) chunks = [src];
+  }
+
+  chunks.forEach((chunk,i) => {
+    problems.push({
+      id: Date.now()+i,
+      num: problems.length+1,
+      title: `Problem ${problems.length+1}`,
+      text: chunk,
+      status: 'todo',
+      work: '',
+      hint: ''
+    });
   });
   renderProblems();
-  showToast(`Loaded ${splits.length} problem${splits.length!==1?'s':''}!`);
+  markCloudDirty();
+  showToast(`Loaded ${chunks.length} problem${chunks.length!==1?'s':''}!`);
 }
+
 
 function addProblem() {
   const input = document.getElementById('new-problem-input');
@@ -1861,6 +2201,22 @@ function addProblem() {
   problems.push({ id: Date.now(), num: problems.length+1, title: `Problem ${problems.length+1}`, text, status: 'todo', work: '', hint: '' });
   input.value = '';
   renderProblems();
+  markCloudDirty();
+}
+
+function deleteProblem(id) {
+  const p = problems.find(x => x.id === id);
+  if (!p) return;
+  if (!confirm(`Delete ${p.title}?`)) return;
+  if (problemTimers[id]) { clearInterval(problemTimers[id]); delete problemTimers[id]; }
+  problems = problems.filter(x => x.id !== id);
+  problems.forEach((x, i) => {
+    x.num = i + 1;
+    if (!x.title || /^Problem\s+\d+$/i.test(x.title)) x.title = `Problem ${i + 1}`;
+  });
+  renderProblems();
+  showToast('Problem deleted.');
+  markCloudDirty();
 }
 
 function renderProblems() {
@@ -1904,6 +2260,7 @@ function renderProblems() {
           <button class="prob-action-btn mark-done" onclick="setProblemStatus(${p.id},'done')">✓ Mark Solved</button>
           <button class="prob-action-btn mark-stuck" onclick="setProblemStatus(${p.id},'stuck')">Stuck</button>
           <button class="prob-action-btn" onclick="setProblemStatus(${p.id},'todo')">Reset Status</button>
+          <button class="prob-action-btn delete" onclick="deleteProblem(${p.id})">Delete</button>
         </div>
       </div>
     </div>`).join('');
@@ -1932,6 +2289,7 @@ function setProblemStatus(id, status, rerender=true) {
   }
   if(rerender) renderProblems();
   else {
+
     const card = document.getElementById('pcard-'+id);
     if(card) {
       card.className = `problem-card ${status==='active'?'active':''} ${status==='done'?'solved':''}`;
@@ -1939,11 +2297,13 @@ function setProblemStatus(id, status, rerender=true) {
       if(badge) { badge.className = `problem-status status-${status}`; badge.textContent = status; }
     }
   }
+  markCloudDirty();
 }
 
 function saveWork(id, val) {
   const p = problems.find(p=>p.id===id);
   if(p) p.work = val;
+  markCloudDirty();
 }
 
 // Timer logic
@@ -2143,9 +2503,15 @@ document.addEventListener('keydown', e => {
   if(e.key==='Escape') document.querySelectorAll('.modal-overlay.open').forEach(m=>m.classList.remove('open'));
 });
 
-// Auto-render KaTeX after scripts load
+// Auto-render KaTeX and initialize Firebase after scripts load
 document.addEventListener('DOMContentLoaded', () => {});
-window.addEventListener('load', () => { if(window.renderMathInElement) renderMath(); });
+window.addEventListener('load', () => {
+  if(window.renderMathInElement) renderMath();
+  initFirebaseSync();
+});
+window.addEventListener('beforeunload', () => {
+  if (syncState.user) saveToCloud();
+});
 </script>
 </body>
 </html>
