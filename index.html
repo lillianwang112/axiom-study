@@ -1935,17 +1935,17 @@ function renderMath() {
     delimiters: [
       {left:'$$',right:'$$',display:true},
       {left:'$',right:'$',display:false},
-      {left:'\[',right:'\]',display:true},
-      {left:'\(',right:'\)',display:false},
+      {left:'\\[',right:'\\]',display:true},
+      {left:'\\(',right:'\\)',display:false},
     ],
     macros: {
-      '\F': '\mathbf{F}',
-      '\R': '\mathbf{R}',
-      '\C': '\mathbf{C}',
-      '\nullspace': '\operatorname{null}',
-      '\range': '\operatorname{range}',
-      '\Lcal': '\mathcal{L}',
-      '\spa': '\operatorname{span}',
+      '\\F': '\\mathbf{F}',
+      '\\R': '\\mathbf{R}',
+      '\\C': '\\mathbf{C}',
+      '\\nullspace': '\\operatorname{null}',
+      '\\range': '\\operatorname{range}',
+      '\\Lcal': '\\mathcal{L}',
+      '\\spa': '\\operatorname{span}',
     },
     throwOnError: false
   };
@@ -2164,7 +2164,7 @@ function parsePsetText(text) {
   if (!src) return;
 
   // Prefer explicit LaTeX problem environments when present.
-  const envMatches = [...src.matchAll(/\begin\{problem\}([\s\S]*?)\end\{problem\}/g)];
+  const envMatches = [...src.matchAll(/\\begin\{problem\}([\\s\\S]*?)\\end\{problem\}/g)];
   let chunks = [];
   if (envMatches.length) {
     chunks = envMatches.map(m => m[1].trim()).filter(Boolean);
