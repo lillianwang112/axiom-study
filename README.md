@@ -165,7 +165,6 @@ Switch to the **Review** tab to drill your math blocks as flashcards.
 Click the **💬 button** in the bottom-right corner to open the AI math tutor. The tutor knows which course and section you're currently studying, so you can ask things like:
 
 - *"Can you give me an example of this theorem?"*
-- *"I'm stuck on Exercise 1A.3 — can you give me a hint without spoiling it?"*
 - *"Explain the intuition behind this proof."*
 
 Switch between models in the chat settings ⚙️ if needed.
