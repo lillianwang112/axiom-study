@@ -27,7 +27,7 @@
 
 ---
 
-大家好! 👋
+Hey, everyone! 👋
 
 I built Axiom because I kept bouncing between my textbook PDFs, a scratch paper notebook, and a flashcard app — and none of them talked to each other. This is a focused math study environment designed for *active recall*: paste your lecture notes or textbook chapters as LaTeX, and Axiom structures them into definitions, theorems, lemmas, and proofs that you can reveal one at a time, take notes on, and review as flashcards. Problem sets live alongside the notes, linked to the relevant section, and an AI math tutor is one click away.
 
