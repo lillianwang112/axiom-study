@@ -1844,6 +1844,20 @@ function markCloudDirty() {
 }
 
 function snapshotForCloud() {
+  // Strip parsedBlocks (re-derivable from content) to stay under Firestore 1MB limit.
+  // Preserve user noteWork annotations in a flat noteWorkMap keyed by "si_bi".
+  const lightNotes = lectureNotes.map(n => {
+    const { parsedBlocks, _editing, ...rest } = n;
+    const noteWorkMap = {};
+    if (parsedBlocks) {
+      parsedBlocks.forEach((sec, si) => {
+        (sec.blocks || []).forEach((b, bi) => {
+          if (b.noteWork) noteWorkMap[`${si}_${bi}`] = b.noteWork;
+        });
+      });
+    }
+    return { ...rest, noteWorkMap: { ...(n.noteWorkMap || {}), ...noteWorkMap } };
+  });
   return {
     state: {
       courses: state.courses,
@@ -1855,7 +1869,7 @@ function snapshotForCloud() {
       problemsSolved: state.problemsSolved,
     },
     problemSets,
-    lectureNotes,
+    lectureNotes: lightNotes,
     problems: getActivePset().problems, // backwards compat
     updatedAtMs: Date.now(),
   };
@@ -1871,7 +1885,8 @@ async function saveToCloud() {
   } catch (e) {
     console.error('saveToCloud failed', e);
     const status = document.getElementById('auth-status');
-    if (status) status.textContent = 'Sync failed';
+    const msg = e?.message || String(e);
+    if (status) status.textContent = 'Sync failed: ' + (msg.length > 60 ? msg.slice(0,60)+'…' : msg);
   }
 }
 
@@ -1892,7 +1907,28 @@ async function loadFromCloud() {
       state.problemsSolved = src.problemsSolved || 0;
     }
     if (Array.isArray(data.problemSets) && data.problemSets.length) problemSets = data.problemSets;
-    if (Array.isArray(data.lectureNotes)) lectureNotes = data.lectureNotes;
+    if (Array.isArray(data.lectureNotes)) {
+      lectureNotes = data.lectureNotes;
+      // Re-parse any notes that have content but no parsedBlocks (stripped before save),
+      // and re-attach noteWork annotations from the persisted noteWorkMap.
+      lectureNotes.forEach(n => {
+        if (n.content && n.content.trim() && (!n.parsedBlocks || !n.parsedBlocks.length)) {
+          try {
+            n.parsedBlocks = parseLatex(n.content);
+          } catch(e) {
+            console.warn('Re-parse failed for note', n.id, e);
+          }
+        }
+        if (n.parsedBlocks && n.noteWorkMap) {
+          n.parsedBlocks.forEach((sec, si) => {
+            (sec.blocks || []).forEach((b, bi) => {
+              const saved = n.noteWorkMap[`${si}_${bi}`];
+              if (saved) b.noteWork = saved;
+            });
+          });
+        }
+      });
+    }
     // Migrate old flat problems
     const oldProbs = Array.isArray(data.problems) ? data.problems : [];
     if (oldProbs.length && problemSets[0]?.problems?.length === 0) problemSets[0].problems = oldProbs;
@@ -5350,10 +5386,19 @@ function renderNoteBlocks(n) {
 
 function saveNoteWork(noteId, si, bi, val) {
   const n = lectureNotes.find(n => n.id === noteId);
-  if (n?.parsedBlocks?.[si]?.blocks?.[bi]) {
+  if (!n) return;
+  // Write to live parsedBlocks for immediate display
+  if (n.parsedBlocks?.[si]?.blocks?.[bi]) {
     n.parsedBlocks[si].blocks[bi].noteWork = val;
-    markCloudDirty();
   }
+  // Also persist in flat noteWorkMap so it survives cloud round-trip (parsedBlocks are stripped before save)
+  if (!n.noteWorkMap) n.noteWorkMap = {};
+  if (val) {
+    n.noteWorkMap[`${si}_${bi}`] = val;
+  } else {
+    delete n.noteWorkMap[`${si}_${bi}`];
+  }
+  markCloudDirty();
 }
 
 function setNoteWorkMode(wid, mode) {
