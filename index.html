@@ -450,6 +450,38 @@
     transition: all 0.2s;
     text-transform: uppercase;
   }
+  .source-btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: none;
+    cursor: pointer;
+    color: var(--text3);
+    opacity: 0.6;
+    transition: all 0.2s;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+  .source-btn:hover { opacity: 1; color: var(--text); border-color: var(--text3); }
+  .source-btn.active { opacity: 1; color: var(--accent); border-color: var(--accent); }
+  .block-source-panel {
+    display: none;
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+    padding: 14px 16px;
+  }
+  .block-source-panel.visible { display: block; }
+  .block-source-panel pre {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text2);
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+    line-height: 1.6;
+  }
 
   /* theorem */
   .block-theorem { background: var(--blue-dim); }
@@ -2483,10 +2515,10 @@ function parseLatex(tex) {
       // These appear as standalone \textbf{Label.} or \noindent\textbf{Label.} at paragraph starts.
       // Pattern: optional \noindent + \textbf{LABEL} where label matches known keywords
       const PROSE_BLOCK_LABELS = [
-        'observation', 'key observation', 'note', 'remark', 'example', 'solution',
-        'answer', 'exercise', 'problem', 'warning', 'caution', 'claim', 'upshot',
-        'key fact', 'fact', 'recall', 'motivation', 'intuition', 'summary',
-        'application', 'consequence', 'slogan', 'question',
+        'observation', 'key observation', 'note', 'remark', 'example', 'non-example',
+        'nonexample', 'solution', 'answer', 'exercise', 'problem', 'warning', 'caution',
+        'claim', 'upshot', 'key fact', 'fact', 'recall', 'motivation', 'intuition',
+        'summary', 'application', 'consequence', 'slogan', 'question', 'answer',
       ];
       // Build a regex that matches \textbf{AnyOfThoseKeywords[. :]?} at paragraph boundaries
       // Also catch "Answer to Question from Class N" style labels
@@ -2499,7 +2531,7 @@ function parseLatex(tex) {
 
       // Find all such labels in the text
       const matches = [];
-      const re = /(?:^|\n\n)(?:\\(?:medskip|bigskip|smallskip|noindent)\s*)*\\textbf\{([^}]{1,80})\}[.:\s]*/g;
+      const re = /(?:^|\n\n?)(?:\\(?:medskip|bigskip|smallskip|noindent)\s*)*\\textbf\{([^}]{1,80})\}[.:\s]*/g;
       let m;
       while ((m = re.exec(t)) !== null) {
         const rawLabel = m[1].trim();
@@ -2551,6 +2583,7 @@ function parseLatex(tex) {
   function labelToType(lower) {
     if (lower.startsWith('observation') || lower.startsWith('key observation')) return 'observation';
     if (lower.startsWith('note') || lower.startsWith('remark')) return 'remark';
+    if (lower.startsWith('non-example') || lower.startsWith('nonexample')) return 'remark';
     if (lower.startsWith('example')) return 'example';
     if (lower.startsWith('solution')) return 'solution';
     if (lower.startsWith('answer')) return 'solution';
@@ -2915,6 +2948,27 @@ function parseLatex(tex) {
 
     // Comments
     if (line.match(/^\s*%/)) { i++; continue; }
+
+    // If axitem is open, check if this line is a standalone block label like
+    // \textbf{Exercise} or \textbf{Question} — flush the axitem first so these
+    // get their own block rather than being swallowed into the preceding one.
+    if (axitemBuf) {
+      const slMatch = line.match(/^\\textbf\{([^}]{1,60})\}\s*$/) ||
+                      line.match(/^\\noindent\s*\\textbf\{([^}]{1,60})\}\s*$/);
+      if (slMatch) {
+        const lbl = slMatch[1].trim().toLowerCase();
+        const STANDALONE_LABELS = ['observation','key observation','note','remark',
+          'example','non-example','nonexample','solution','answer','exercise',
+          'problem','warning','caution','claim','upshot','key fact','fact',
+          'recall','motivation','intuition','summary','application',
+          'consequence','slogan','question'];
+        if (STANDALONE_LABELS.some(kw => lbl === kw || lbl.startsWith(kw + ' ') || lbl.startsWith(kw + '.'))) {
+          flushAxitem();
+          proseBuf += line + '\n';
+          i++; continue;
+        }
+      }
+    }
 
     // Content: goes into axitem buffer if open, else proseBuf
     if (axitemBuf) {
@@ -3780,6 +3834,8 @@ function renderBlocks(blocks, sectionIdx) {
           ? `<span class="block-preview">${previewSnippet}</span>`
           : `<span class="block-title"></span>`);
 
+    const srcIdR = `src-${bodyId}`;
+    const rawSrcR = (b.content || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     return `
       <div class="math-block ${blockClass}">
         <div class="block-header" onclick="toggleBlock('${bodyId}', this)">
@@ -3789,9 +3845,11 @@ function renderBlocks(blocks, sectionIdx) {
           <div class="blk-hdr-acts">
             <button class="blk-act-btn blk-ask-btn" onclick="event.stopPropagation(); askAboutBlock(${sectionIdx},${bi})" title="Ask AI about this">Ask AI</button>
             <button class="blk-act-btn" onclick="event.stopPropagation(); editBlockLatex(${sectionIdx},${bi})" title="Edit LaTeX">Edit</button>
+            <button class="source-btn" id="srcbtn-${srcIdR}" onclick="event.stopPropagation();toggleLatexSource('${srcIdR}',this)" title="View LaTeX source">{ src }</button>
             ${startHidden ? `<button class="reveal-btn" id="rbtn-${bodyId}">Reveal</button>` : ''}
           </div>
         </div>
+        <div class="block-source-panel" id="${srcIdR}"><pre>${rawSrcR}</pre></div>
         <div class="block-body ${startHidden ? 'hidden' : ''}" id="${bodyId}">
           <div id="rendered-${bodyId}">${bodyContent}</div>
           ${exerciseWork}
@@ -3806,6 +3864,14 @@ function renderBlocks(blocks, sectionIdx) {
         </div>
       </div>`;
   }).join('');
+}
+
+function toggleLatexSource(sourceId, btn) {
+  const panel = document.getElementById(sourceId);
+  if (!panel) return;
+  const visible = panel.classList.toggle('visible');
+  btn.classList.toggle('active', visible);
+  btn.textContent = visible ? '{ hide }' : '{ src }';
 }
 
 function toggleBlock(id, headerEl) {
@@ -5324,7 +5390,15 @@ function renderNoteBlocks(n) {
   return n.parsedBlocks.map((section, si) => {
     const sectionHtml = section.blocks.map((b, bi) => {
       if (b.type === 'subhead') return `<h3 class="tex-subhead">${b.content}</h3>`;
-      if (b.type === 'prose') return `<div class="prose">${latexToHtml(b.content)}</div>`;
+      if (b.type === 'prose') {
+        const proseSrcId = `note-prose-src-${n.id}-${si}-${bi}`;
+        const proseSrc = (b.content || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        return `<div class="prose" style="position:relative;">
+          <button class="source-btn" id="srcbtn-${proseSrcId}" onclick="toggleLatexSource('${proseSrcId}',this)" title="View LaTeX source" style="position:absolute;top:4px;right:4px;">{ src }</button>
+          ${latexToHtml(b.content)}
+          <div class="block-source-panel" id="${proseSrcId}"><pre>${proseSrc}</pre></div>
+        </div>`;
+      }
 
       const typeMap = {theorem:'Theorem',lemma:'Lemma',corollary:'Corollary',proposition:'Proposition',proof:'Proof',exercise:'Exercise',solution:'Solution',example:'Example',definition:'Definition',notation:'Notation',axiom:'Axiom',remark:'Remark',claim:'Claim',problem:'Problem',warning:'Warning',comment:'Comment',observation:'Observation'};
       const label = typeMap[b.type] || b.type.charAt(0).toUpperCase() + b.type.slice(1);
@@ -5380,13 +5454,17 @@ function renderNoteBlocks(n) {
           </div>`;
       }
 
+      const srcId = `note-src-${n.id}-${si}-${bi}`;
+      const rawSrc = (b.content || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
       return `
         <div class="math-block ${blockClass}">
-          <div class="block-header" onclick="toggleBlock('${bodyId}', this)">
+          <div class="block-header" onclick="toggleBlock('${bodyId}', this)" style="position:relative;">
             <span class="block-type-label">${label}</span>
             ${noteHeaderMiddle}
             ${startHidden ? `<button class="reveal-btn" id="rbtn-${bodyId}">Reveal</button>` : ''}
+            <button class="source-btn" id="srcbtn-${srcId}" onclick="event.stopPropagation();toggleLatexSource('${srcId}',this)" title="View LaTeX source">{ src }</button>
           </div>
+          <div class="block-source-panel" id="${srcId}"><pre>${rawSrc}</pre></div>
           <div class="block-body ${startHidden?'hidden':''}" id="${bodyId}">
             ${latexToHtml(b.content)}
             ${workArea}
