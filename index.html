@@ -2576,6 +2576,10 @@ function parseLatex(tex) {
       conditions: 'theorem',
       'unique additive identity': 'theorem',
       'unique additive inverse': 'theorem',
+      fact: 'claim',
+      'key fact': 'claim',
+      'very useful fact': 'claim',
+      result: 'theorem',
     };
     const lower = typeTitle.toLowerCase().trim();
     // Match "type:" or "type " prefix
@@ -3162,8 +3166,11 @@ function latexToHtml(text) {
   text = text.replace(/\\nullsp(?![a-zA-Z{])/g, '$\\operatorname{null}$');
   text = text.replace(/\\nul(?![a-zA-Z{])/g, '$\\operatorname{null}$');
   text = text.replace(/\\range(?![a-zA-Z{])/g, '$\\operatorname{range}$');
+  text = text.replace(/\\Span(?![a-zA-Z{])/g, '$\\operatorname{span}$');
   text = text.replace(/\\spa(?![a-zA-Z{])/g, '$\\operatorname{span}$');
   text = text.replace(/\\spann(?![a-zA-Z{])/g, '$\\operatorname{span}$');
+  text = text.replace(/\\Id(?![a-zA-Z{])/g, '$\\operatorname{Id}$');
+  text = text.replace(/\\pr(?![a-zA-Z{])/g, '$\\operatorname{pr}$');
   text = text.replace(/\\rank(?![a-zA-Z{])/g, '$\\operatorname{rank}$');
   text = text.replace(/\\tr(?![a-zA-Z{])/g, '$\\operatorname{tr}$');
   text = text.replace(/\\im(?![a-zA-Z{])/g, '$\\operatorname{im}$');
@@ -3242,8 +3249,11 @@ const KATEX_MACROS = {
   '\\nul': '\\operatorname{null}',
   '\\nullspace': '\\operatorname{null}',
   '\\range': '\\operatorname{range}',
+  '\\Span': '\\operatorname{span}',
   '\\spa': '\\operatorname{span}',
   '\\spann': '\\operatorname{span}',
+  '\\Id': '\\operatorname{Id}',
+  '\\pr': '\\operatorname{pr}',
   '\\rank': '\\operatorname{rank}',
   '\\dim': '\\operatorname{dim}',
   '\\trace': '\\operatorname{trace}',
