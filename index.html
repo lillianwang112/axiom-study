@@ -1909,10 +1909,10 @@ async function loadFromCloud() {
     if (Array.isArray(data.problemSets) && data.problemSets.length) problemSets = data.problemSets;
     if (Array.isArray(data.lectureNotes)) {
       lectureNotes = data.lectureNotes;
-      // Re-parse any notes that have content but no parsedBlocks (stripped before save),
-      // and re-attach noteWork annotations from the persisted noteWorkMap.
+      // Always re-parse from raw content (parsedBlocks are stripped before saving to stay under 1MB).
+      // Re-attach noteWork annotations from the persisted noteWorkMap.
       lectureNotes.forEach(n => {
-        if (n.content && n.content.trim() && (!n.parsedBlocks || !n.parsedBlocks.length)) {
+        if (n.content && n.content.trim()) {
           try {
             n.parsedBlocks = parseLatex(n.content);
           } catch(e) {
@@ -5266,7 +5266,20 @@ function renderActiveNote() {
   const c = document.getElementById('notes-content');
   const n = lectureNotes.find(n=>n.id===activeNoteId);
   if(!n) { c.innerHTML='<div style="text-align:center;padding:60px 20px;color:var(--text3);font-style:italic;">Add a class or precept to start taking notes.</div>'; return; }
-  // If we have parsed blocks, show rendered view; otherwise show editor
+  // Auto-parse if content exists but parsedBlocks not yet built (e.g. new note this session)
+  if (n.content && n.content.trim() && (!n.parsedBlocks || !n.parsedBlocks.length) && !n._editing) {
+    try {
+      n.parsedBlocks = parseLatex(n.content);
+      if (n.noteWorkMap) {
+        n.parsedBlocks.forEach((sec, si) => {
+          (sec.blocks || []).forEach((b, bi) => {
+            const saved = n.noteWorkMap[`${si}_${bi}`];
+            if (saved) b.noteWork = saved;
+          });
+        });
+      }
+    } catch(e) { console.warn('Auto-parse failed', n.id, e); }
+  }
   const hasParsed = n.parsedBlocks && n.parsedBlocks.length > 0;
   const kindLabel = (n.kind === 'precept') ? 'Precept' : 'Class';
   const kindColor = (n.kind === 'precept') ? 'var(--accent)' : 'var(--blue)';
