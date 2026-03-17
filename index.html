@@ -2046,14 +2046,7 @@ function stripLatexCmd(tex, cmdName, numArgs) {
   let lastIdx = 0;
   let m;
   pattern.lastIndex = 0;
-  const re = new RegExp(
-            '\\((' + esc + ')\\)' +                                   // (N.N)
-            '|(\\b(?:by|see|use|from|via|of|in|result|lemma|theorem|proposition|corollary|definition|example|exercise|notation|using|applying|recall|above|below)\\s+)(' + esc + ')(?=[\\s),;.\\]:])' +  // keyword N.N
-            '|(\\s)(' + esc + ')(?=[\\s),;.\\]:])' +                     // space N.N
-            '|(^)(' + esc + ')(?=[\\s),;.\\]:])',                         // start-of-node N.N
-            'g'
-          );
-  while ((m = re.exec(tex)) !== null) {
+  while ((m = pattern.exec(tex)) !== null) {
     result += tex.slice(lastIdx, m.index);
     let pos = m.index + m[0].length;
     let count = 0;
