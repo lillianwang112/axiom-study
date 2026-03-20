@@ -1133,6 +1133,82 @@
   .note-mode-toggle { display: flex; gap: 4px; margin-bottom: 6px; }
   .note-mode-btn { font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 3px 10px; border-radius: 3px; border: 1px solid var(--border); background: none; cursor: pointer; color: var(--text3); transition: all 0.15s; }
   .note-mode-btn.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+
+  /* ── Ink canvas note ── */
+  .ink-note-wrap {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .ink-note-wrap.visible { display: flex; }
+  .ink-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    padding: 6px 8px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .ink-tool-btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 4px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: none;
+    cursor: pointer;
+    color: var(--text3);
+    transition: all 0.15s;
+    letter-spacing: 0.04em;
+    line-height: 1.4;
+  }
+  .ink-tool-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+  .ink-tool-btn.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+  .ink-tool-btn.danger:hover { border-color: var(--red); color: var(--red); background: var(--red-dim); }
+  .ink-size-group { display: flex; align-items: center; gap: 4px; }
+  .ink-size-dot {
+    width: 18px; height: 18px; border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+  .ink-size-dot:hover { border-color: var(--accent); }
+  .ink-size-dot.active { border-color: var(--accent); background: var(--accent-dim); }
+  .ink-size-dot .dot-inner { background: var(--text); border-radius: 50%; }
+  .ink-canvas-wrap {
+    position: relative;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--bg);
+    cursor: crosshair;
+    touch-action: none;
+  }
+  .ink-canvas-wrap.eraser-mode { cursor: cell; }
+  .ink-canvas-wrap canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+    background: var(--bg);
+  }
+  .ink-color-btn {
+    width: 20px; height: 20px; border-radius: 50%;
+    border: 2px solid var(--border);
+    cursor: pointer;
+    transition: border-color 0.15s;
+    flex-shrink: 0;
+  }
+  .ink-color-btn.active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
   /* ── Block read checkbox ── */
   .blk-check { width:16px; height:16px; border-radius:3px; border:2px solid var(--border2); background:none; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:all 0.2s; flex-shrink:0; padding:0; font-size:10px; color:transparent; margin-right:6px; }
   .blk-check.checked { background:var(--green-dim); border-color:var(--green); color:var(--green); }
@@ -1829,6 +1905,111 @@ let chatHistory = [];
 
 // Collapsed chapters in TOC
 let collapsedChapters = {};
+
+// ── INK ENGINE REGISTRY (declared early, engine code defined later) ──
+const inkEngines = {};
+function getInkEngine(bodyId) {
+  if (!inkEngines[bodyId]) {
+    inkEngines[bodyId] = {
+      isDrawing: false,
+      isPalm: false,
+      activePointerId: null,
+      currentStroke: null,
+      ctx: null,
+      rect: null,
+      color: document.documentElement.getAttribute('data-theme') === 'dark' ? '#e8e0d0' : '#2a2520',
+      lineWidth: 2,
+      erasing: false,
+      undoStack: [],
+      MIN_DIST_SQ: 9,
+      MAX_DIST_SQ: 2500,
+      _ptsBuf: [],
+      coords(e) {
+        const r = this.rect;
+        const canvas = this.ctx.canvas;
+        const dpr = window.devicePixelRatio || 1;
+        return {
+          x: (e.clientX - r.left) / r.width  * (canvas.width / dpr),
+          y: (e.clientY - r.top)  / r.height * (canvas.height / dpr),
+        };
+      },
+      pushUndo() {
+        if (!this.ctx) return;
+        const c = this.ctx.canvas;
+        this.undoStack.push(c.toDataURL());
+        if (this.undoStack.length > 30) this.undoStack.shift();
+      },
+      flushPts(pts) {
+        if (!pts.length || !this.isDrawing || !this.currentStroke) return;
+        const ctx = this.ctx;
+        let { lastPt } = this.currentStroke;
+        ctx.beginPath();
+        ctx.moveTo(lastPt.x, lastPt.y);
+        for (const p of pts) {
+          const mx = (lastPt.x + p.x) / 2;
+          const my = (lastPt.y + p.y) / 2;
+          ctx.quadraticCurveTo(lastPt.x, lastPt.y, mx, my);
+          lastPt = p;
+        }
+        ctx.lineTo(lastPt.x, lastPt.y);
+        ctx.stroke();
+        this.currentStroke = { lastPt };
+      },
+      onPointerDown(e) {
+        if (e.pointerType === 'touch') {
+          if ((e.width > 80 || e.height > 80) && e.width > 0 && e.height > 0) { this.isPalm = true; return; }
+        }
+        this.isPalm = false;
+        this.pushUndo();
+        this.isDrawing = true;
+        this.activePointerId = e.pointerId;
+        this.rect = this.ctx.canvas.getBoundingClientRect();
+        const ctx = this.ctx;
+        if (this.erasing) {
+          ctx.globalCompositeOperation = 'destination-out';
+          ctx.lineWidth = this.lineWidth * 6;
+        } else {
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.strokeStyle = this.color;
+          ctx.lineWidth = this.lineWidth;
+        }
+        const startPt = this.coords(e);
+        this.currentStroke = { lastPt: startPt };
+        // Dot for taps
+        ctx.beginPath();
+        ctx.arc(startPt.x, startPt.y, ctx.lineWidth / 2, 0, Math.PI * 2);
+        if (!this.erasing) { ctx.fillStyle = this.color; ctx.fill(); }
+      },
+      onPointerMove(e) {
+        if (!this.isDrawing || this.isPalm || e.pointerId !== this.activePointerId) return;
+        if (e.pointerType === 'touch' && (e.width > 80 || e.height > 80) && e.width > 0 && e.height > 0) {
+          this.isPalm = true; this.isDrawing = false; this.currentStroke = null; return;
+        }
+        if (!this.currentStroke) return;
+        const coalesced = e.getCoalescedEvents ? e.getCoalescedEvents() : null;
+        const hasC = coalesced && coalesced.length > 0;
+        const n = hasC ? coalesced.length : 1;
+        const pts = this._ptsBuf; pts.length = 0;
+        for (let i = 0; i < n; i++) {
+          const ce = hasC ? coalesced[i] : e;
+          const pt = this.coords(ce);
+          const last = pts.length > 0 ? pts[pts.length - 1] : this.currentStroke.lastPt;
+          if (!last) { pts.push(pt); continue; }
+          const dx = pt.x - last.x, dy = pt.y - last.y, d2 = dx*dx + dy*dy;
+          if (d2 >= this.MIN_DIST_SQ && d2 <= this.MAX_DIST_SQ) pts.push(pt);
+        }
+        if (pts.length > 0) this.flushPts(pts);
+      },
+      onPointerUp(e) {
+        if (e.pointerId !== this.activePointerId) return;
+        this.isDrawing = false; this.isPalm = false; this.activePointerId = null; this.currentStroke = null;
+        if (this.ctx) this.ctx.globalCompositeOperation = 'source-over';
+      },
+      onPointerCancel(e) { this.onPointerUp(e); },
+    };
+  }
+  return inkEngines[bodyId];
+}
 
 
 const firebaseConfig = {
@@ -3857,9 +4038,35 @@ function renderBlocks(blocks, sectionIdx) {
             <div class="note-mode-toggle">
               <button class="note-mode-btn active" id="nmode-plain-${bodyId}" onclick="setNoteMode('${bodyId}','plain')">Plain Text</button>
               <button class="note-mode-btn" id="nmode-latex-${bodyId}" onclick="setNoteMode('${bodyId}','latex')">LaTeX Preview</button>
+              <button class="note-mode-btn" id="nmode-ink-${bodyId}" onclick="setNoteMode('${bodyId}','ink')">✏ Ink</button>
             </div>
             <textarea class="annotation-input" id="note-ta-${bodyId}" placeholder="Notes on this ${label.toLowerCase()}… (supports $LaTeX$)" onchange="saveNote(${sectionIdx},${bi},this.value)" oninput="onNoteInput('${bodyId}')">${b.notes||''}</textarea>
             <div id="note-preview-${bodyId}" style="display:none;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:15px;line-height:1.7;min-height:40px;margin-top:4px;"></div>
+            <div class="ink-note-wrap" id="ink-wrap-${bodyId}">
+              <div class="ink-toolbar" id="ink-tb-${bodyId}">
+                <button class="ink-tool-btn active" id="ink-pen-${bodyId}" onclick="inkSetTool('${bodyId}','pen')">✏ Pen</button>
+                <button class="ink-tool-btn" id="ink-erase-${bodyId}" onclick="inkSetTool('${bodyId}','eraser')">◻ Eraser</button>
+                <div class="ink-size-group" title="Stroke size">
+                  <div class="ink-size-dot active" id="ink-sz1-${bodyId}" onclick="inkSetSize('${bodyId}',1,this)" title="Fine"><div class="dot-inner" style="width:3px;height:3px;"></div></div>
+                  <div class="ink-size-dot" id="ink-sz2-${bodyId}" onclick="inkSetSize('${bodyId}',2,this)" title="Medium"><div class="dot-inner" style="width:5px;height:5px;"></div></div>
+                  <div class="ink-size-dot" id="ink-sz3-${bodyId}" onclick="inkSetSize('${bodyId}',3,this)" title="Thick"><div class="dot-inner" style="width:9px;height:9px;"></div></div>
+                </div>
+                <div style="display:flex;gap:5px;align-items:center;margin-left:2px;" title="Color">
+                  <div class="ink-color-btn active" id="ink-col0-${bodyId}" style="background:var(--text);" onclick="inkSetColor('${bodyId}',0,document.documentElement.getAttribute('data-theme')==='dark'?'#e8e0d0':'#2a2520',this)" title="Default"></div>
+                  <div class="ink-color-btn" id="ink-col1-${bodyId}" style="background:#a0622a;" onclick="inkSetColor('${bodyId}',1,'#a0622a',this)" title="Accent"></div>
+                  <div class="ink-color-btn" id="ink-col2-${bodyId}" style="background:#2a5878;" onclick="inkSetColor('${bodyId}',2,'#2a5878',this)" title="Blue"></div>
+                  <div class="ink-color-btn" id="ink-col3-${bodyId}" style="background:#3a7a3a;" onclick="inkSetColor('${bodyId}',3,'#3a7a3a',this)" title="Green"></div>
+                  <div class="ink-color-btn" id="ink-col4-${bodyId}" style="background:#a03838;" onclick="inkSetColor('${bodyId}',4,'#a03838',this)" title="Red"></div>
+                </div>
+                <span style="flex:1;"></span>
+                <button class="ink-tool-btn" onclick="inkUndo('${bodyId}')">↩ Undo</button>
+                <button class="ink-tool-btn danger" onclick="inkClear('${bodyId}',${sectionIdx},${bi})">Clear</button>
+              </div>
+              <div class="ink-canvas-wrap" id="ink-cw-${bodyId}">
+                <canvas id="ink-cv-${bodyId}" height="300"></canvas>
+              </div>
+              ${b.inkNotes ? `<div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text3);text-align:right;margin-top:2px;">Ink saved ✓</div>` : ''}
+            </div>
           </div>
         </div>
       </div>`;
@@ -3980,21 +4187,28 @@ function saveNote(si, bi, val) {
 function setNoteMode(bodyId, mode) {
   const ta = document.getElementById('note-ta-' + bodyId);
   const preview = document.getElementById('note-preview-' + bodyId);
+  const inkWrap = document.getElementById('ink-wrap-' + bodyId);
   const btnPlain = document.getElementById('nmode-plain-' + bodyId);
   const btnLatex = document.getElementById('nmode-latex-' + bodyId);
-  if (!ta || !preview) return;
+  const btnInk   = document.getElementById('nmode-ink-' + bodyId);
+  if (!ta) return;
+  // Reset all
+  [btnPlain, btnLatex, btnInk].forEach(b => b && b.classList.remove('active'));
   if (mode === 'latex') {
-    preview.innerHTML = latexToHtml(ta.value);
-    preview.style.display = '';
+    if (preview) { preview.innerHTML = latexToHtml(ta.value); preview.style.display = ''; renderMath(); }
     ta.style.display = 'none';
-    if (btnPlain) btnPlain.classList.remove('active');
+    if (inkWrap) inkWrap.classList.remove('visible');
     if (btnLatex) btnLatex.classList.add('active');
-    renderMath();
+  } else if (mode === 'ink') {
+    if (preview) preview.style.display = 'none';
+    ta.style.display = 'none';
+    if (inkWrap) { inkWrap.classList.add('visible'); initInkCanvas(bodyId); }
+    if (btnInk) btnInk.classList.add('active');
   } else {
-    preview.style.display = 'none';
+    if (preview) preview.style.display = 'none';
     ta.style.display = '';
+    if (inkWrap) inkWrap.classList.remove('visible');
     if (btnPlain) btnPlain.classList.add('active');
-    if (btnLatex) btnLatex.classList.remove('active');
   }
 }
 
@@ -4641,6 +4855,7 @@ function _renderSubCard(sub, parentNum, si) {
 
 function _renderProblemWorkArea(p) {
   const ew = escHtml(p.work || '');
+  const inkId = `pwork-${p.id}`;
   return `<div class="timer-section">
     <div class="sidebar-label">Independent Struggle Timer</div>
     <div class="timer-controls">
@@ -4655,14 +4870,44 @@ function _renderProblemWorkArea(p) {
     <div class="hint-box" id="hint-${p.id}"><div class="hint-loading">Generating hint…</div></div>
   </div>
   <div class="work-area">
-    <label><span>Your Work / Scratch (supports $LaTeX$)</span>
-      <div style="display:flex;gap:6px;">
-        <button class="work-act-btn" onclick="toggleWorkPreview(${p.id})">Preview</button>
-        <button class="work-act-btn" onclick="copyWork(${p.id})">Copy</button>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+      <label style="margin:0;"><span>Your Work / Scratch (supports $LaTeX$)</span></label>
+      <div style="display:flex;gap:4px;align-items:center;">
+        <div class="note-mode-toggle" style="margin:0;">
+          <button class="note-mode-btn active" id="pwmode-text-${p.id}" onclick="setPworkMode(${p.id},'text')">Text</button>
+          <button class="note-mode-btn" id="pwmode-ink-${p.id}" onclick="setPworkMode(${p.id},'ink')">✏ Ink</button>
+        </div>
+        <button class="work-act-btn" id="pwpreview-btn-${p.id}" onclick="toggleWorkPreview(${p.id})">Preview</button>
+        <button class="work-act-btn" id="pwcopy-btn-${p.id}" onclick="copyWork(${p.id})">Copy</button>
       </div>
-    </label>
+    </div>
     <textarea id="work-${p.id}" placeholder="Write your proof attempt here…" onchange="saveWork(${p.id},this.value)" oninput="updateWorkPreview(${p.id})">${ew}</textarea>
     <div class="work-preview" id="workprev-${p.id}"></div>
+    <div class="ink-note-wrap" id="ink-wrap-${inkId}">
+      <div class="ink-toolbar" id="ink-tb-${inkId}">
+        <button class="ink-tool-btn active" id="ink-pen-${inkId}" onclick="inkSetTool('${inkId}','pen')">✏ Pen</button>
+        <button class="ink-tool-btn" id="ink-erase-${inkId}" onclick="inkSetTool('${inkId}','eraser')">◻ Eraser</button>
+        <div class="ink-size-group">
+          <div class="ink-size-dot active" id="ink-sz1-${inkId}" onclick="inkSetSize('${inkId}',1,this)" title="Fine"><div class="dot-inner" style="width:3px;height:3px;"></div></div>
+          <div class="ink-size-dot" id="ink-sz2-${inkId}" onclick="inkSetSize('${inkId}',2,this)" title="Medium"><div class="dot-inner" style="width:5px;height:5px;"></div></div>
+          <div class="ink-size-dot" id="ink-sz3-${inkId}" onclick="inkSetSize('${inkId}',3,this)" title="Thick"><div class="dot-inner" style="width:9px;height:9px;"></div></div>
+        </div>
+        <div style="display:flex;gap:5px;align-items:center;margin-left:2px;">
+          <div class="ink-color-btn active" id="ink-col0-${inkId}" style="background:var(--text);" onclick="inkSetColor('${inkId}',0,document.documentElement.getAttribute('data-theme')==='dark'?'#e8e0d0':'#2a2520',this)"></div>
+          <div class="ink-color-btn" id="ink-col1-${inkId}" style="background:#a0622a;" onclick="inkSetColor('${inkId}',1,'#a0622a',this)"></div>
+          <div class="ink-color-btn" id="ink-col2-${inkId}" style="background:#2a5878;" onclick="inkSetColor('${inkId}',2,'#2a5878',this)"></div>
+          <div class="ink-color-btn" id="ink-col3-${inkId}" style="background:#3a7a3a;" onclick="inkSetColor('${inkId}',3,'#3a7a3a',this)"></div>
+          <div class="ink-color-btn" id="ink-col4-${inkId}" style="background:#a03838;" onclick="inkSetColor('${inkId}',4,'#a03838',this)"></div>
+        </div>
+        <span style="flex:1;"></span>
+        <button class="ink-tool-btn" onclick="inkPworkUndo('${inkId}')">↩ Undo</button>
+        <button class="ink-tool-btn danger" onclick="inkPworkClear('${inkId}',${p.id})">Clear</button>
+      </div>
+      <div class="ink-canvas-wrap" id="ink-cw-${inkId}">
+        <canvas id="ink-cv-${inkId}" height="300"></canvas>
+      </div>
+      ${p.inkWork ? `<div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text3);text-align:right;margin-top:2px;">Ink saved ✓</div>` : ''}
+    </div>
   </div>
   <div class="problem-actions">
     <button class="prob-action-btn mark-done" onclick="setProblemStatus(${p.id},'done')">✓ Mark Solved</button>
@@ -6768,6 +7013,276 @@ function generateProblemTitle(text, fallbackNum) {
   return clean || `Problem ${fallbackNum}`;
 }
 
+
+// ── PSET INK WORK MODE ──
+function setPworkMode(problemId, mode) {
+  const inkId = `pwork-${problemId}`;
+  const ta = document.getElementById('work-' + problemId);
+  const inkWrap = document.getElementById('ink-wrap-' + inkId);
+  const prevBtn = document.getElementById('workprev-' + problemId);
+  const previewBtn = document.getElementById('pwpreview-btn-' + problemId);
+  const copyBtn = document.getElementById('pwcopy-btn-' + problemId);
+  const btnText = document.getElementById('pwmode-text-' + problemId);
+  const btnInk  = document.getElementById('pwmode-ink-' + problemId);
+  [btnText, btnInk].forEach(b => b && b.classList.remove('active'));
+  if (mode === 'ink') {
+    if (ta) ta.style.display = 'none';
+    if (prevBtn) prevBtn.style.display = 'none';
+    if (previewBtn) previewBtn.style.display = 'none';
+    if (copyBtn) copyBtn.style.display = 'none';
+    if (inkWrap) { inkWrap.classList.add('visible'); initInkCanvasPwork(inkId, problemId); }
+    if (btnInk) btnInk.classList.add('active');
+  } else {
+    if (ta) ta.style.display = '';
+    if (prevBtn) prevBtn.style.display = '';
+    if (previewBtn) previewBtn.style.display = '';
+    if (copyBtn) copyBtn.style.display = '';
+    if (inkWrap) inkWrap.classList.remove('visible');
+    if (btnText) btnText.classList.add('active');
+  }
+}
+
+function initInkCanvasPwork(inkId, problemId) {
+  const canvas = document.getElementById('ink-cv-' + inkId);
+  if (!canvas) return;
+  const eng = getInkEngine(inkId);
+  const dpr = window.devicePixelRatio || 1;
+  if (!eng.ctx) {
+    const cssW = canvas.parentElement.offsetWidth || 600;
+    canvas.width  = cssW * dpr;
+    canvas.height = 300 * dpr;
+    canvas.style.height = '300px';
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.strokeStyle = eng.color;
+    ctx.lineWidth = eng.lineWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    eng.ctx = ctx;
+    // Restore saved ink
+    const pset = getActivePset();
+    const p = pset?.problems?.find(prob => prob.id === problemId);
+    if (p?.inkWork) {
+      const img = new Image();
+      img.onload = () => { ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(img, 0, 0, canvas.width/dpr, canvas.height/dpr); };
+      img.src = p.inkWork;
+    }
+    // Attach pointer listeners
+    const pd = (e) => eng.onPointerDown(e);
+    const pm = (e) => eng.onPointerMove(e);
+    const pu = (e) => { eng.onPointerUp(e); if (!eng.isDrawing) scheduleInkSavePwork(inkId, problemId); };
+    const pc = (e) => eng.onPointerCancel(e);
+    const noScroll = (e) => e.preventDefault();
+    canvas.addEventListener('pointerdown',   pd);
+    canvas.addEventListener('pointermove',   pm);
+    canvas.addEventListener('pointerup',     pu);
+    canvas.addEventListener('pointercancel', pc);
+    canvas.addEventListener('touchstart',    noScroll, { passive: false });
+    canvas.addEventListener('touchmove',     noScroll, { passive: false });
+    document.addEventListener('pointerup',     pu);
+    document.addEventListener('pointercancel', pc);
+  }
+  const wrap = document.getElementById('ink-cw-' + inkId);
+  if (wrap) wrap.classList.toggle('eraser-mode', eng.erasing);
+}
+
+let _inkPworkTimers = {};
+function scheduleInkSavePwork(inkId, problemId) {
+  clearTimeout(_inkPworkTimers[inkId]);
+  _inkPworkTimers[inkId] = setTimeout(() => inkSavePwork(inkId, problemId), 800);
+}
+
+function inkSavePwork(inkId, problemId) {
+  const eng = inkEngines[inkId];
+  if (!eng || !eng.ctx) return;
+  const canvas = eng.ctx.canvas;
+  const pixels = eng.ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  const isEmpty = !pixels.some(p => p !== 0);
+  const pset = getActivePset();
+  const p = pset?.problems?.find(prob => prob.id === problemId);
+  if (!p) return;
+  p.inkWork = isEmpty ? null : canvas.toDataURL('image/png');
+  markCloudDirty();
+}
+
+function inkPworkUndo(inkId) {
+  const eng = inkEngines[inkId];
+  if (!eng || !eng.ctx || !eng.undoStack.length) return;
+  const prev = eng.undoStack.pop();
+  const ctx = eng.ctx;
+  const img = new Image();
+  img.onload = () => { ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height); ctx.drawImage(img,0,0,ctx.canvas.width/(window.devicePixelRatio||1),ctx.canvas.height/(window.devicePixelRatio||1)); };
+  img.src = prev;
+}
+
+function inkPworkClear(inkId, problemId) {
+  const eng = inkEngines[inkId];
+  if (!eng || !eng.ctx) return;
+  eng.pushUndo();
+  eng.ctx.clearRect(0,0,eng.ctx.canvas.width,eng.ctx.canvas.height);
+  inkSavePwork(inkId, problemId);
+}
+
+// ── INK CANVAS ENGINE ──
+// (getInkEngine and inkEngines registry declared early, near state)
+
+function initInkCanvas(bodyId) {
+  const canvas = document.getElementById('ink-cv-' + bodyId);
+  const wrap   = document.getElementById('ink-cw-' + bodyId);
+  if (!canvas) return;
+  const eng = getInkEngine(bodyId);
+  const dpr = window.devicePixelRatio || 1;
+  // Only re-init if not yet initialized (avoid wiping on re-show)
+  if (!eng.ctx) {
+    const cssW = canvas.parentElement.offsetWidth || 600;
+    canvas.width  = cssW * dpr;
+    canvas.height = 300 * dpr;
+    canvas.style.height = '300px';
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.strokeStyle = eng.color;
+    ctx.lineWidth = eng.lineWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    eng.ctx = ctx;
+    // Restore saved ink if any
+    inkRestoreFromState(bodyId);
+    // Attach pointer listeners
+    const on  = (ev, fn) => canvas.addEventListener(ev, fn);
+    const don = (ev, fn) => document.addEventListener(ev, fn);
+    const pOpts = { passive: true };
+    const pNoOpts = { passive: false };
+    const pd = (e) => eng.onPointerDown(e);
+    const pm = (e) => eng.onPointerMove(e);
+    const pu = (e) => { eng.onPointerUp(e); scheduleInkSave(bodyId); };
+    const pc = (e) => eng.onPointerCancel(e);
+    const noScroll = (e) => e.preventDefault();
+    on('pointerdown',   pd);
+    on('pointermove',   pm);
+    on('pointerup',     pu);
+    on('pointercancel', pc);
+    on('touchstart',    noScroll, pNoOpts);
+    on('touchmove',     noScroll, pNoOpts);
+    don('pointerup',     pu);
+    don('pointercancel', pc);
+    eng._listeners = { canvas, pd, pm, pu, pc, noScroll };
+  }
+  // Sync eraser cursor
+  if (wrap) wrap.classList.toggle('eraser-mode', eng.erasing);
+}
+
+function inkRestoreFromState(bodyId) {
+  // Extract sectionIdx and bi from bodyId pattern: "block-SI-BI"
+  const parts = bodyId.split('-');
+  if (parts.length < 3) return;
+  const si = parseInt(parts[1]);
+  const bi = parseInt(parts[2]);
+  const course = state.courses.find(c => c.id === state.activeCourse);
+  const block = course?.sections?.[si]?.blocks?.[bi];
+  if (!block || !block.inkNotes) return;
+  const eng = getInkEngine(bodyId);
+  if (!eng.ctx) return;
+  const img = new Image();
+  img.onload = () => {
+    eng.ctx.clearRect(0, 0, eng.ctx.canvas.width, eng.ctx.canvas.height);
+    eng.ctx.drawImage(img, 0, 0, eng.ctx.canvas.width / (window.devicePixelRatio||1), eng.ctx.canvas.height / (window.devicePixelRatio||1));
+  };
+  img.src = block.inkNotes;
+}
+
+function inkSave(bodyId, si, bi) {
+  const eng = inkEngines[bodyId];
+  if (!eng || !eng.ctx) return;
+  const canvas = eng.ctx.canvas;
+  // Check if canvas is blank (skip saving empty canvases)
+  const pixels = eng.ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  const isEmpty = !pixels.some(p => p !== 0);
+  const course = state.courses.find(c => c.id === state.activeCourse);
+  if (!course?.sections?.[si]?.blocks?.[bi]) return;
+  if (isEmpty) {
+    course.sections[si].blocks[bi].inkNotes = null;
+  } else {
+    course.sections[si].blocks[bi].inkNotes = canvas.toDataURL('image/png');
+  }
+  markCloudDirty();
+}
+
+function inkSetTool(bodyId, tool) {
+  const eng = getInkEngine(bodyId);
+  const wrap = document.getElementById('ink-cw-' + bodyId);
+  const penBtn   = document.getElementById('ink-pen-'   + bodyId);
+  const eraseBtn = document.getElementById('ink-erase-' + bodyId);
+  eng.erasing = (tool === 'eraser');
+  if (wrap) wrap.classList.toggle('eraser-mode', eng.erasing);
+  if (penBtn)   penBtn.classList.toggle('active',  !eng.erasing);
+  if (eraseBtn) eraseBtn.classList.toggle('active', eng.erasing);
+}
+
+function inkSetSize(bodyId, sizeIdx, el) {
+  const eng = getInkEngine(bodyId);
+  const sizes = [2, 4, 8];
+  eng.lineWidth = sizes[sizeIdx - 1] || 2;
+  // Update dot UI
+  [1,2,3].forEach(i => {
+    const d = document.getElementById(`ink-sz${i}-${bodyId}`);
+    if (d) d.classList.toggle('active', i === sizeIdx);
+  });
+}
+
+function inkSetColor(bodyId, idx, color, el) {
+  const eng = getInkEngine(bodyId);
+  eng.color = color;
+  eng.erasing = false;
+  const penBtn = document.getElementById('ink-pen-' + bodyId);
+  const eraseBtn = document.getElementById('ink-erase-' + bodyId);
+  if (penBtn)   penBtn.classList.add('active');
+  if (eraseBtn) eraseBtn.classList.remove('active');
+  const wrap = document.getElementById('ink-cw-' + bodyId);
+  if (wrap) wrap.classList.remove('eraser-mode');
+  // Update color dot UI
+  [0,1,2,3,4].forEach(i => {
+    const d = document.getElementById(`ink-col${i}-${bodyId}`);
+    if (d) d.classList.toggle('active', i === idx);
+  });
+}
+
+function inkUndo(bodyId) {
+  const eng = inkEngines[bodyId];
+  if (!eng || !eng.ctx || !eng.undoStack.length) return;
+  const prev = eng.undoStack.pop();
+  const img = new Image();
+  const ctx = eng.ctx;
+  img.onload = () => {
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.drawImage(img, 0, 0, ctx.canvas.width / (window.devicePixelRatio||1), ctx.canvas.height / (window.devicePixelRatio||1));
+    // Save after undo
+    const parts = bodyId.split('-');
+    if (parts.length >= 3) inkSave(bodyId, parseInt(parts[1]), parseInt(parts[2]));
+  };
+  img.src = prev;
+}
+
+function inkClear(bodyId, si, bi) {
+  const eng = inkEngines[bodyId];
+  if (!eng || !eng.ctx) return;
+  eng.pushUndo();
+  eng.ctx.clearRect(0, 0, eng.ctx.canvas.width, eng.ctx.canvas.height);
+  inkSave(bodyId, si, bi);
+  // Remove "Ink saved" indicator
+  const wrap = document.getElementById('ink-wrap-' + bodyId);
+  if (wrap) { const lbl = wrap.querySelector('div[style*="text-align:right"]'); if (lbl) lbl.remove(); }
+}
+
+// Save ink after each stroke (pointerup on document, debounced)
+let inkSaveDebounceTimers = {};
+function scheduleInkSave(bodyId) {
+  const parts = bodyId.split('-');
+  if (parts.length < 3) return;
+  const si = parseInt(parts[1]), bi = parseInt(parts[2]);
+  if (isNaN(si) || isNaN(bi)) return;
+  clearTimeout(inkSaveDebounceTimers[bodyId]);
+  inkSaveDebounceTimers[bodyId] = setTimeout(() => inkSave(bodyId, si, bi), 800);
+}
 
 // ── TOAST ──
 function showToast(msg) {
