@@ -1892,13 +1892,47 @@ const state = {
   timers: {},
 };
 
-// Problem sets — each has {id, name, problems[]}
-let problemSets = [{ id: 'default', name: 'Miscellaneous', problems: [] }];
-let activePsId = 'default';
+// ── PER-COURSE DATA HELPERS ──
+// problemSets and lectureNotes are now stored on each course object.
+// These proxies keep all existing call-sites working without changes.
 
-// Lecture notes — each has {id, name, content, date}
-let lectureNotes = [];
-let activeNoteId = null;
+function _activeCourseObj() {
+  return state.courses.find(c => c.id === state.activeCourse) || state.courses[0];
+}
+
+function _ensureCourseData(course) {
+  if (!course) return;
+  if (!Array.isArray(course.problemSets) || course.problemSets.length === 0)
+    course.problemSets = [{ id: 'default_' + course.id, name: 'Miscellaneous', problems: [] }];
+  if (typeof course.activePsId !== 'string')
+    course.activePsId = course.problemSets[0].id;
+  if (!Array.isArray(course.lectureNotes))
+    course.lectureNotes = [];
+  if (typeof course.activeNoteId !== 'string')
+    course.activeNoteId = null;
+}
+
+// Proxy getters/setters so existing code like `problemSets`, `activePsId`, etc. still works
+Object.defineProperty(window, 'problemSets', {
+  get() { const c = _activeCourseObj(); _ensureCourseData(c); return c.problemSets; },
+  set(v) { const c = _activeCourseObj(); _ensureCourseData(c); c.problemSets = v; },
+  configurable: true
+});
+Object.defineProperty(window, 'activePsId', {
+  get() { const c = _activeCourseObj(); _ensureCourseData(c); return c.activePsId; },
+  set(v) { const c = _activeCourseObj(); _ensureCourseData(c); c.activePsId = v; },
+  configurable: true
+});
+Object.defineProperty(window, 'lectureNotes', {
+  get() { const c = _activeCourseObj(); _ensureCourseData(c); return c.lectureNotes; },
+  set(v) { const c = _activeCourseObj(); _ensureCourseData(c); c.lectureNotes = v; },
+  configurable: true
+});
+Object.defineProperty(window, 'activeNoteId', {
+  get() { const c = _activeCourseObj(); _ensureCourseData(c); return c.activeNoteId; },
+  set(v) { const c = _activeCourseObj(); _ensureCourseData(c); c.activeNoteId = v; },
+  configurable: true
+});
 
 // Chat history
 let chatHistory = [];
@@ -2056,10 +2090,8 @@ function markCloudDirty() {
   syncState.saveTimer = setTimeout(saveToCloud, 900);
 }
 
-function snapshotForCloud() {
-  // Strip parsedBlocks (re-derivable from content) to stay under Firestore 1MB limit.
-  // Preserve user noteWork annotations in a flat noteWorkMap keyed by "si_bi".
-  const lightNotes = lectureNotes.map(n => {
+function _lightNotesForCourse(notes) {
+  return (notes || []).map(n => {
     const { parsedBlocks, _editing, ...rest } = n;
     const noteWorkMap = {};
     if (parsedBlocks) {
@@ -2071,9 +2103,26 @@ function snapshotForCloud() {
     }
     return { ...rest, noteWorkMap: { ...(n.noteWorkMap || {}), ...noteWorkMap } };
   });
+}
+
+function snapshotForCloud() {
+  // Per-course data (problemSets, lectureNotes) lives on each course object.
+  // Strip parsedBlocks (re-derivable) to stay under Firestore 1MB limit.
+  const coursesSnapshot = state.courses.map(course => {
+    _ensureCourseData(course);
+    const { sections, problemSets, activePsId, lectureNotes, activeNoteId, ...meta } = course;
+    return {
+      ...meta,
+      sections,
+      problemSets,
+      activePsId,
+      lectureNotes: _lightNotesForCourse(lectureNotes),
+      activeNoteId,
+    };
+  });
   return {
     state: {
-      courses: state.courses,
+      courses: coursesSnapshot,
       activeCourse: state.activeCourse,
       activeSection: state.activeSection,
       streak: state.streak,
@@ -2081,9 +2130,6 @@ function snapshotForCloud() {
       sectionsRead: state.sectionsRead,
       problemsSolved: state.problemsSolved,
     },
-    problemSets,
-    lectureNotes: lightNotes,
-    problems: getActivePset().problems, // backwards compat
     updatedAtMs: Date.now(),
   };
 }
@@ -2092,7 +2138,7 @@ async function saveToCloud() {
   if (!syncState.user || !syncState.db || !syncState.dirty) return;
   syncState.dirty = false;
   try {
-    await syncState.db.collection('users').doc(syncState.user.uid).collection('app').doc('state').set(snapshotForCloud(), { merge: true });
+    await syncState.db.collection('users').doc(syncState.user.uid).collection('app').doc('state').set(snapshotForCloud());
     const status = document.getElementById('auth-status');
     if (status) status.textContent = `Synced: ${new Date().toLocaleTimeString()}`;
   } catch (e) {
@@ -2101,6 +2147,23 @@ async function saveToCloud() {
     const msg = e?.message || String(e);
     if (status) status.textContent = 'Sync failed: ' + (msg.length > 60 ? msg.slice(0,60)+'…' : msg);
   }
+}
+
+function _rehydrateNotes(notes) {
+  (notes || []).forEach(n => {
+    if (n.content && n.content.trim()) {
+      try { n.parsedBlocks = parseLatex(n.content); }
+      catch(e) { console.warn('Re-parse failed for note', n.id, e); }
+    }
+    if (n.parsedBlocks && n.noteWorkMap) {
+      n.parsedBlocks.forEach((sec, si) => {
+        (sec.blocks || []).forEach((b, bi) => {
+          const saved = n.noteWorkMap[`${si}_${bi}`];
+          if (saved) b.noteWork = saved;
+        });
+      });
+    }
+  });
 }
 
 async function loadFromCloud() {
@@ -2119,32 +2182,41 @@ async function loadFromCloud() {
       state.sectionsRead = src.sectionsRead || 0;
       state.problemsSolved = src.problemsSolved || 0;
     }
-    if (Array.isArray(data.problemSets) && data.problemSets.length) problemSets = data.problemSets;
-    if (Array.isArray(data.lectureNotes)) {
-      lectureNotes = data.lectureNotes;
-      // Always re-parse from raw content (parsedBlocks are stripped before saving to stay under 1MB).
-      // Re-attach noteWork annotations from the persisted noteWorkMap.
-      lectureNotes.forEach(n => {
-        if (n.content && n.content.trim()) {
-          try {
-            n.parsedBlocks = parseLatex(n.content);
-          } catch(e) {
-            console.warn('Re-parse failed for note', n.id, e);
-          }
+
+    // Restore per-course data and rehydrate notes for every course.
+    state.courses.forEach(course => {
+      _ensureCourseData(course);
+      _rehydrateNotes(course.lectureNotes);
+    });
+
+    // --- One-time migration from old flat format (problemSets/lectureNotes at top level) ---
+    // Only runs when courses don't yet have any per-course data (first load after upgrade).
+    // We detect "no per-course data" by checking if ALL courses were just initialised with
+    // empty defaults by _ensureCourseData (i.e. none have real problems or notes yet).
+    const noCourseHasData = state.courses.every(c =>
+      c.lectureNotes.length === 0 && c.problemSets.every(ps => ps.problems.length === 0)
+    );
+    if (noCourseHasData) {
+      const hasFlatPsets = Array.isArray(data.problemSets) && data.problemSets.length;
+      const hasFlatNotes = Array.isArray(data.lectureNotes) && data.lectureNotes.length;
+      const oldProbs = Array.isArray(data.problems) ? data.problems : [];
+      if (hasFlatPsets || hasFlatNotes || oldProbs.length) {
+        // Migrate onto the first course (MAT217) which owned the old data
+        const target = state.courses[0];
+        if (hasFlatPsets) {
+          target.problemSets = data.problemSets;
+          target.activePsId = target.problemSets[0]?.id || target.activePsId;
         }
-        if (n.parsedBlocks && n.noteWorkMap) {
-          n.parsedBlocks.forEach((sec, si) => {
-            (sec.blocks || []).forEach((b, bi) => {
-              const saved = n.noteWorkMap[`${si}_${bi}`];
-              if (saved) b.noteWork = saved;
-            });
-          });
+        if (hasFlatNotes) {
+          target.lectureNotes = data.lectureNotes;
+          _rehydrateNotes(target.lectureNotes);
         }
-      });
+        if (oldProbs.length && target.problemSets[0]?.problems?.length === 0) {
+          target.problemSets[0].problems = oldProbs;
+        }
+      }
     }
-    // Migrate old flat problems
-    const oldProbs = Array.isArray(data.problems) ? data.problems : [];
-    if (oldProbs.length && problemSets[0]?.problems?.length === 0) problemSets[0].problems = oldProbs;
+
     renderCourses();
     renderTOC();
     renderPsetSB();
@@ -2255,8 +2327,17 @@ function renderCourses() {
 }
 function selectCourse(id) {
   state.activeCourse = id;
+  _ensureCourseData(_activeCourseObj());
+  // Reset review state so stale chapter selections from another course don't persist
+  rvSelectedChapters = new Set();
+  rvChipsInitialized = false;
+  rvSessionActive = false;
   renderCourses();
   renderTOC();
+  renderPsetSB();
+  renderProblems();
+  renderNotesSB();
+  renderActiveNote();
   const course = state.courses.find(c=>c.id===id);
   if(course.sections.length===0) {
     document.getElementById('upload-screen').style.display='';
@@ -5061,18 +5142,18 @@ const RV_MIN_SWIPE = 25;
 
 const REVIEWABLE_TYPES = ['definition','notation','axiom','theorem','lemma','corollary','proposition','result'];
 
-// Collect all reviewable blocks, optionally filtered by chapter
+// Collect all reviewable blocks for the ACTIVE course only, optionally filtered by chapter
 function getReviewableBlocks(chapters) {
   const blocks = [];
-  state.courses.forEach(course => {
-    course.sections.forEach((section, si) => {
-      if (chapters && chapters.size > 0 && !chapters.has(section.chapter || course.name)) return;
-      section.blocks.forEach((block, bi) => {
-        if (REVIEWABLE_TYPES.includes(block.type)) {
-          if (!block.srs) block.srs = { easeFactor: 2.5, interval: 0, repetitions: 0, nextReview: 0, lastReviewed: null };
-          blocks.push({ block, si, bi, courseId: course.id, courseName: course.name, sectionTitle: section.title, chapter: section.chapter || course.name });
-        }
-      });
+  const activeCourse = state.courses.find(c => c.id === state.activeCourse);
+  if (!activeCourse) return blocks;
+  activeCourse.sections.forEach((section, si) => {
+    if (chapters && chapters.size > 0 && !chapters.has(section.chapter || activeCourse.name)) return;
+    section.blocks.forEach((block, bi) => {
+      if (REVIEWABLE_TYPES.includes(block.type)) {
+        if (!block.srs) block.srs = { easeFactor: 2.5, interval: 0, repetitions: 0, nextReview: 0, lastReviewed: null };
+        blocks.push({ block, si, bi, courseId: activeCourse.id, courseName: activeCourse.name, sectionTitle: section.title, chapter: section.chapter || activeCourse.name });
+      }
     });
   });
   return blocks;
@@ -5080,11 +5161,11 @@ function getReviewableBlocks(chapters) {
 
 function getUniqueChapters() {
   const chapters = [];
-  state.courses.forEach(course => {
-    course.sections.forEach(s => {
-      const ch = s.chapter || course.name;
-      if (!chapters.includes(ch)) chapters.push(ch);
-    });
+  const activeCourse = state.courses.find(c => c.id === state.activeCourse);
+  if (!activeCourse) return chapters;
+  activeCourse.sections.forEach(s => {
+    const ch = s.chapter || activeCourse.name;
+    if (!chapters.includes(ch)) chapters.push(ch);
   });
   return chapters;
 }
