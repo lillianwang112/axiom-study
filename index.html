@@ -1184,7 +1184,9 @@
     position: relative;
     border: 1px solid var(--border);
     border-radius: 6px;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
+    max-height: 300px;
     background: var(--bg);
     cursor: crosshair;
     touch-action: none;
@@ -1954,6 +1956,7 @@ function getInkEngine(bodyId) {
       color: document.documentElement.getAttribute('data-theme') === 'dark' ? '#e8e0d0' : '#2a2520',
       lineWidth: 2,
       erasing: false,
+      canvasHeight: 300,
       undoStack: [],
       MIN_DIST_SQ: 9,
       MAX_DIST_SQ: 2500,
@@ -4142,6 +4145,8 @@ function renderBlocks(blocks, sectionIdx) {
                 <span style="flex:1;"></span>
                 <button class="ink-tool-btn" onclick="inkUndo('${bodyId}')">↩ Undo</button>
                 <button class="ink-tool-btn danger" onclick="inkClear('${bodyId}',${sectionIdx},${bi})">Clear</button>
+                <button class="ink-tool-btn" onclick="inkAddCanvas('${bodyId}')" title="Add 300px canvas portion">＋ Canvas</button>
+                <button class="ink-tool-btn danger" onclick="inkRemoveCanvas('${bodyId}')" title="Remove last 300px canvas portion">－ Canvas</button>
               </div>
               <div class="ink-canvas-wrap" id="ink-cw-${bodyId}">
                 <canvas id="ink-cv-${bodyId}" height="300"></canvas>
@@ -4983,6 +4988,8 @@ function _renderProblemWorkArea(p) {
         <span style="flex:1;"></span>
         <button class="ink-tool-btn" onclick="inkPworkUndo('${inkId}')">↩ Undo</button>
         <button class="ink-tool-btn danger" onclick="inkPworkClear('${inkId}',${p.id})">Clear</button>
+        <button class="ink-tool-btn" onclick="inkPworkAddCanvas('${inkId}',${p.id})" title="Add 300px canvas portion">＋ Canvas</button>
+        <button class="ink-tool-btn danger" onclick="inkPworkRemoveCanvas('${inkId}',${p.id})" title="Remove last 300px canvas portion">－ Canvas</button>
       </div>
       <div class="ink-canvas-wrap" id="ink-cw-${inkId}">
         <canvas id="ink-cv-${inkId}" height="300"></canvas>
@@ -7130,9 +7137,13 @@ function initInkCanvasPwork(inkId, problemId) {
   const dpr = window.devicePixelRatio || 1;
   if (!eng.ctx) {
     const cssW = canvas.parentElement.offsetWidth || 600;
+    const pset = getActivePset();
+    const p = pset?.problems?.find(prob => prob.id === problemId);
+    const _savedH = p?.inkWorkHeight || 300;
     canvas.width  = cssW * dpr;
-    canvas.height = 300 * dpr;
-    canvas.style.height = '300px';
+    canvas.height = _savedH * dpr;
+    canvas.style.height = _savedH + 'px';
+    eng.canvasHeight = _savedH;
     const ctx = canvas.getContext('2d');
     ctx.scale(dpr, dpr);
     ctx.strokeStyle = eng.color;
@@ -7141,8 +7152,6 @@ function initInkCanvasPwork(inkId, problemId) {
     ctx.lineJoin = 'round';
     eng.ctx = ctx;
     // Restore saved ink
-    const pset = getActivePset();
-    const p = pset?.problems?.find(prob => prob.id === problemId);
     if (p?.inkWork) {
       const img = new Image();
       img.onload = () => { ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(img, 0, 0, canvas.width/dpr, canvas.height/dpr); };
@@ -7153,7 +7162,7 @@ function initInkCanvasPwork(inkId, problemId) {
     const pm = (e) => eng.onPointerMove(e);
     const pu = (e) => { eng.onPointerUp(e); if (!eng.isDrawing) scheduleInkSavePwork(inkId, problemId); };
     const pc = (e) => eng.onPointerCancel(e);
-    const noScroll = (e) => e.preventDefault();
+    const noScroll = (e) => { if (eng.isDrawing) e.preventDefault(); };
     canvas.addEventListener('pointerdown',   pd);
     canvas.addEventListener('pointermove',   pm);
     canvas.addEventListener('pointerup',     pu);
@@ -7183,6 +7192,7 @@ function inkSavePwork(inkId, problemId) {
   const p = pset?.problems?.find(prob => prob.id === problemId);
   if (!p) return;
   p.inkWork = isEmpty ? null : canvas.toDataURL('image/png');
+  p.inkWorkHeight = isEmpty ? null : (eng.canvasHeight || 300);
   markCloudDirty();
 }
 
@@ -7216,9 +7226,18 @@ function initInkCanvas(bodyId) {
   // Only re-init if not yet initialized (avoid wiping on re-show)
   if (!eng.ctx) {
     const cssW = canvas.parentElement.offsetWidth || 600;
+    // Determine saved height (restores expanded canvas across sessions)
+    const _iParts = bodyId.split('-');
+    let _savedH = 300;
+    if (_iParts.length >= 3) {
+      const _si = parseInt(_iParts[1]), _bi = parseInt(_iParts[2]);
+      const _course = state.courses.find(c => c.id === state.activeCourse);
+      _savedH = _course?.sections?.[_si]?.blocks?.[_bi]?.inkNotesHeight || 300;
+    }
     canvas.width  = cssW * dpr;
-    canvas.height = 300 * dpr;
-    canvas.style.height = '300px';
+    canvas.height = _savedH * dpr;
+    canvas.style.height = _savedH + 'px';
+    eng.canvasHeight = _savedH;
     const ctx = canvas.getContext('2d');
     ctx.scale(dpr, dpr);
     ctx.strokeStyle = eng.color;
@@ -7231,13 +7250,12 @@ function initInkCanvas(bodyId) {
     // Attach pointer listeners
     const on  = (ev, fn) => canvas.addEventListener(ev, fn);
     const don = (ev, fn) => document.addEventListener(ev, fn);
-    const pOpts = { passive: true };
     const pNoOpts = { passive: false };
     const pd = (e) => eng.onPointerDown(e);
     const pm = (e) => eng.onPointerMove(e);
     const pu = (e) => { eng.onPointerUp(e); scheduleInkSave(bodyId); };
     const pc = (e) => eng.onPointerCancel(e);
-    const noScroll = (e) => e.preventDefault();
+    const noScroll = (e) => { if (eng.isDrawing) e.preventDefault(); };
     on('pointerdown',   pd);
     on('pointermove',   pm);
     on('pointerup',     pu);
@@ -7282,8 +7300,10 @@ function inkSave(bodyId, si, bi) {
   if (!course?.sections?.[si]?.blocks?.[bi]) return;
   if (isEmpty) {
     course.sections[si].blocks[bi].inkNotes = null;
+    course.sections[si].blocks[bi].inkNotesHeight = null;
   } else {
     course.sections[si].blocks[bi].inkNotes = canvas.toDataURL('image/png');
+    course.sections[si].blocks[bi].inkNotesHeight = eng.canvasHeight || 300;
   }
   markCloudDirty();
 }
@@ -7352,6 +7372,74 @@ function inkClear(bodyId, si, bi) {
   // Remove "Ink saved" indicator
   const wrap = document.getElementById('ink-wrap-' + bodyId);
   if (wrap) { const lbl = wrap.querySelector('div[style*="text-align:right"]'); if (lbl) lbl.remove(); }
+}
+
+// ── INK CANVAS RESIZE (add/delete portions) ──
+const INK_CANVAS_STEP = 300; // px per added portion
+
+function inkResizeCanvas(bodyId, newHeightCss) {
+  const eng = inkEngines[bodyId];
+  if (!eng || !eng.ctx) return;
+  const canvas = eng.ctx.canvas;
+  const dpr = window.devicePixelRatio || 1;
+  const prevCssH = eng.canvasHeight || 300;
+  const snapshot = canvas.toDataURL();
+  // Resize physical canvas (this clears content and resets ctx state)
+  canvas.height = newHeightCss * dpr;
+  canvas.style.height = newHeightCss + 'px';
+  eng.canvasHeight = newHeightCss;
+  // Re-apply context settings lost on resize
+  const ctx = eng.ctx;
+  ctx.scale(dpr, dpr);
+  ctx.strokeStyle = eng.color;
+  ctx.lineWidth = eng.lineWidth;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  // Restore drawing at original size (content stays at the top)
+  const img = new Image();
+  img.onload = () => ctx.drawImage(img, 0, 0, canvas.width / dpr, prevCssH);
+  img.src = snapshot;
+  // Update the canvas-wrap max-height to keep the viewport window size
+  // (the wrap scrolls; we keep max-height at INK_CANVAS_STEP)
+  const wrap = document.getElementById('ink-cw-' + bodyId);
+  if (wrap) wrap.style.maxHeight = INK_CANVAS_STEP + 'px';
+}
+
+function inkAddCanvas(bodyId) {
+  const eng = inkEngines[bodyId];
+  if (!eng || !eng.ctx) return;
+  inkResizeCanvas(bodyId, (eng.canvasHeight || INK_CANVAS_STEP) + INK_CANVAS_STEP);
+  // Scroll the wrap to show the new portion
+  const wrap = document.getElementById('ink-cw-' + bodyId);
+  if (wrap) setTimeout(() => { wrap.scrollTop = wrap.scrollHeight; }, 50);
+  scheduleInkSave(bodyId);
+}
+
+function inkRemoveCanvas(bodyId) {
+  const eng = inkEngines[bodyId];
+  if (!eng || !eng.ctx) return;
+  const currentH = eng.canvasHeight || INK_CANVAS_STEP;
+  if (currentH <= INK_CANVAS_STEP) return; // already at minimum
+  inkResizeCanvas(bodyId, currentH - INK_CANVAS_STEP);
+  scheduleInkSave(bodyId);
+}
+
+function inkPworkAddCanvas(inkId, problemId) {
+  const eng = inkEngines[inkId];
+  if (!eng || !eng.ctx) return;
+  inkResizeCanvas(inkId, (eng.canvasHeight || INK_CANVAS_STEP) + INK_CANVAS_STEP);
+  const wrap = document.getElementById('ink-cw-' + inkId);
+  if (wrap) setTimeout(() => { wrap.scrollTop = wrap.scrollHeight; }, 50);
+  scheduleInkSavePwork(inkId, problemId);
+}
+
+function inkPworkRemoveCanvas(inkId, problemId) {
+  const eng = inkEngines[inkId];
+  if (!eng || !eng.ctx) return;
+  const currentH = eng.canvasHeight || INK_CANVAS_STEP;
+  if (currentH <= INK_CANVAS_STEP) return;
+  inkResizeCanvas(inkId, currentH - INK_CANVAS_STEP);
+  scheduleInkSavePwork(inkId, problemId);
 }
 
 // Save ink after each stroke (pointerup on document, debounced)
