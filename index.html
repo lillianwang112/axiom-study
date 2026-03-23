@@ -1971,15 +1971,18 @@ let collapsedChapters = {};
 // ── INK ENGINE REGISTRY (declared early, engine code defined later) ──
 const inkEngines = {};
 let _inkLastActiveId = null;
-// Single document-level listener for Apple Pencil Pro squeeze (barrel button = pen button 1).
-// The squeeze fires on whatever element the pencil is over, not necessarily the canvas,
-// so we catch it here and route to the last-active engine.
-document.addEventListener('pointerdown', (e) => {
+// Apple Pencil Pro squeeze → toggle eraser.
+// Uses window capture (fires before any element handler) since the barrel-button pointerdown
+// lands on whatever element the pencil hovers over, which may not be the ink canvas.
+// Falls back to any initialized engine if no canvas has been drawn on yet.
+window.addEventListener('pointerdown', (e) => {
   if (e.pointerType !== 'pen' || e.button !== 1) return;
-  if (!_inkLastActiveId) return;
-  const _eng = inkEngines[_inkLastActiveId];
-  if (_eng) inkSetTool(_inkLastActiveId, _eng.erasing ? 'pen' : 'eraser');
-});
+  e.preventDefault(); // suppress any system default for the squeeze gesture
+  const targetId = _inkLastActiveId || Object.keys(inkEngines).find(id => inkEngines[id].ctx);
+  if (!targetId) return;
+  const _eng = inkEngines[targetId];
+  if (_eng) inkSetTool(targetId, _eng.erasing ? 'pen' : 'eraser');
+}, { capture: true });
 function getInkEngine(bodyId) {
   if (!inkEngines[bodyId]) {
     const _defs = JSON.parse(localStorage.getItem('inkDefaults') || '{}');
@@ -2017,8 +2020,14 @@ function getInkEngine(bodyId) {
       pushUndo() {
         if (!this.ctx) return;
         const c = this.ctx.canvas;
-        this.undoStack.push(c.toDataURL());
-        if (this.undoStack.length > 30) this.undoStack.shift();
+        if (this.undoStack.length >= 15) this.undoStack.shift();
+        // Store as a canvas snapshot (GPU drawImage copy) instead of toDataURL —
+        // toDataURL synchronously PNG-encodes the full physical canvas on the main thread,
+        // causing visible freezes on retina displays. Canvas copy is near-instant.
+        const snap = document.createElement('canvas');
+        snap.width = c.width; snap.height = c.height;
+        snap.getContext('2d').drawImage(c, 0, 0);
+        this.undoStack.push(snap);
       },
       flushPts(pts) {
         if (!pts.length || !this.isDrawing || !this.currentStroke) return;
@@ -7364,9 +7373,10 @@ function inkPworkUndo(inkId) {
   if (!eng || !eng.ctx || !eng.undoStack.length) return;
   const prev = eng.undoStack.pop();
   const ctx = eng.ctx;
-  const img = new Image();
-  img.onload = () => { ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height); ctx.drawImage(img,0,0,ctx.canvas.width/(window.devicePixelRatio||1),ctx.canvas.height/(window.devicePixelRatio||1)); };
-  img.src = prev;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = ctx.canvas.width / dpr, cssH = ctx.canvas.height / dpr;
+  ctx.clearRect(0, 0, cssW, cssH);
+  ctx.drawImage(prev, 0, 0, cssW, cssH);
 }
 
 function inkPworkClear(inkId, problemId) {
@@ -7560,16 +7570,13 @@ function inkUndo(bodyId) {
   const eng = inkEngines[bodyId];
   if (!eng || !eng.ctx || !eng.undoStack.length) return;
   const prev = eng.undoStack.pop();
-  const img = new Image();
   const ctx = eng.ctx;
-  img.onload = () => {
-    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-    ctx.drawImage(img, 0, 0, ctx.canvas.width / (window.devicePixelRatio||1), ctx.canvas.height / (window.devicePixelRatio||1));
-    // Save after undo
-    const parts = bodyId.split('-');
-    if (parts.length >= 3) inkSave(bodyId, parseInt(parts[1]), parseInt(parts[2]));
-  };
-  img.src = prev;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = ctx.canvas.width / dpr, cssH = ctx.canvas.height / dpr;
+  ctx.clearRect(0, 0, cssW, cssH);
+  ctx.drawImage(prev, 0, 0, cssW, cssH);
+  const parts = bodyId.split('-');
+  if (parts.length >= 3) inkSave(bodyId, parseInt(parts[1]), parseInt(parts[2]));
 }
 
 function inkSyncToolbar(bodyId) {
