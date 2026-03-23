@@ -1958,6 +1958,7 @@ function getInkEngine(bodyId) {
       erasing: false,
       canvasHeight: 300,
       undoStack: [],
+      pressureEnabled: false,
       MIN_DIST_SQ: 9,
       MAX_DIST_SQ: 2500,
       _ptsBuf: [],
@@ -1968,6 +1969,7 @@ function getInkEngine(bodyId) {
         return {
           x: (e.clientX - r.left) / r.width  * (canvas.width / dpr),
           y: (e.clientY - r.top)  / r.height * (canvas.height / dpr),
+          pressure: e.pressure > 0 ? e.pressure : 0.5,
         };
       },
       pushUndo() {
@@ -1980,16 +1982,31 @@ function getInkEngine(bodyId) {
         if (!pts.length || !this.isDrawing || !this.currentStroke) return;
         const ctx = this.ctx;
         let { lastPt } = this.currentStroke;
-        ctx.beginPath();
-        ctx.moveTo(lastPt.x, lastPt.y);
-        for (const p of pts) {
-          const mx = (lastPt.x + p.x) / 2;
-          const my = (lastPt.y + p.y) / 2;
-          ctx.quadraticCurveTo(lastPt.x, lastPt.y, mx, my);
-          lastPt = p;
+        if (this.pressureEnabled && !this.erasing) {
+          // Pressure-sensitive: each segment gets its own lineWidth
+          for (const p of pts) {
+            const mx = (lastPt.x + p.x) / 2;
+            const my = (lastPt.y + p.y) / 2;
+            const avgPressure = ((lastPt.pressure || 0.5) + (p.pressure || 0.5)) / 2;
+            ctx.lineWidth = Math.max(0.5, this.lineWidth * (0.3 + avgPressure * 1.7));
+            ctx.beginPath();
+            ctx.moveTo(lastPt.x, lastPt.y);
+            ctx.quadraticCurveTo(lastPt.x, lastPt.y, mx, my);
+            ctx.stroke();
+            lastPt = p;
+          }
+        } else {
+          ctx.beginPath();
+          ctx.moveTo(lastPt.x, lastPt.y);
+          for (const p of pts) {
+            const mx = (lastPt.x + p.x) / 2;
+            const my = (lastPt.y + p.y) / 2;
+            ctx.quadraticCurveTo(lastPt.x, lastPt.y, mx, my);
+            lastPt = p;
+          }
+          ctx.lineTo(lastPt.x, lastPt.y);
+          ctx.stroke();
         }
-        ctx.lineTo(lastPt.x, lastPt.y);
-        ctx.stroke();
         this.currentStroke = { lastPt };
       },
       onPointerDown(e) {
@@ -2012,9 +2029,12 @@ function getInkEngine(bodyId) {
         }
         const startPt = this.coords(e);
         this.currentStroke = { lastPt: startPt };
-        // Dot for taps
+        // Dot for taps - pressure-aware radius when enabled
+        const dotRadius = (this.pressureEnabled && !this.erasing)
+          ? Math.max(0.5, this.lineWidth * (0.3 + (startPt.pressure || 0.5) * 1.7)) / 2
+          : ctx.lineWidth / 2;
         ctx.beginPath();
-        ctx.arc(startPt.x, startPt.y, ctx.lineWidth / 2, 0, Math.PI * 2);
+        ctx.arc(startPt.x, startPt.y, dotRadius, 0, Math.PI * 2);
         if (!this.erasing) { ctx.fillStyle = this.color; ctx.fill(); }
       },
       onPointerMove(e) {
@@ -4130,6 +4150,7 @@ function renderBlocks(blocks, sectionIdx) {
               <div class="ink-toolbar" id="ink-tb-${bodyId}">
                 <button class="ink-tool-btn active" id="ink-pen-${bodyId}" onclick="inkSetTool('${bodyId}','pen')">✏ Pen</button>
                 <button class="ink-tool-btn" id="ink-erase-${bodyId}" onclick="inkSetTool('${bodyId}','eraser')">◻ Eraser</button>
+                <button class="ink-tool-btn" id="ink-pressure-${bodyId}" onclick="inkTogglePressure('${bodyId}')" title="Toggle pressure sensitivity (Apple Pencil / stylus)">⌁ Pressure</button>
                 <div class="ink-size-group" title="Stroke size">
                   <div class="ink-size-dot active" id="ink-sz1-${bodyId}" onclick="inkSetSize('${bodyId}',1,this)" title="Fine"><div class="dot-inner" style="width:3px;height:3px;"></div></div>
                   <div class="ink-size-dot" id="ink-sz2-${bodyId}" onclick="inkSetSize('${bodyId}',2,this)" title="Medium"><div class="dot-inner" style="width:5px;height:5px;"></div></div>
@@ -4973,6 +4994,7 @@ function _renderProblemWorkArea(p) {
       <div class="ink-toolbar" id="ink-tb-${inkId}">
         <button class="ink-tool-btn active" id="ink-pen-${inkId}" onclick="inkSetTool('${inkId}','pen')">✏ Pen</button>
         <button class="ink-tool-btn" id="ink-erase-${inkId}" onclick="inkSetTool('${inkId}','eraser')">◻ Eraser</button>
+        <button class="ink-tool-btn" id="ink-pressure-${inkId}" onclick="inkTogglePressure('${inkId}')" title="Toggle pressure sensitivity (Apple Pencil / stylus)">⌁ Pressure</button>
         <div class="ink-size-group">
           <div class="ink-size-dot active" id="ink-sz1-${inkId}" onclick="inkSetSize('${inkId}',1,this)" title="Fine"><div class="dot-inner" style="width:3px;height:3px;"></div></div>
           <div class="ink-size-dot" id="ink-sz2-${inkId}" onclick="inkSetSize('${inkId}',2,this)" title="Medium"><div class="dot-inner" style="width:5px;height:5px;"></div></div>
@@ -7306,6 +7328,13 @@ function inkSave(bodyId, si, bi) {
     course.sections[si].blocks[bi].inkNotesHeight = eng.canvasHeight || 300;
   }
   markCloudDirty();
+}
+
+function inkTogglePressure(bodyId) {
+  const eng = getInkEngine(bodyId);
+  eng.pressureEnabled = !eng.pressureEnabled;
+  const btn = document.getElementById('ink-pressure-' + bodyId);
+  if (btn) btn.classList.toggle('active', eng.pressureEnabled);
 }
 
 function inkSetTool(bodyId, tool) {
