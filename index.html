@@ -2758,6 +2758,8 @@ function preprocessTex(tex) {
 
 // Strip inline LaTeX for use in titles and TOC (preserves $...$ math for KaTeX)
 function cleanInlineLatex(text) {
+  // Protect escaped dollar signs before any $ processing
+  text = text.replace(/\\\$/g, '\x01DOLLAR\x01');
   const mathSlots = [];
   text = text.replace(/\$[^$]+\$/g, m => { mathSlots.push(m); return '\x00MATH' + (mathSlots.length-1) + '\x00'; });
   text = text
@@ -2777,6 +2779,8 @@ function cleanInlineLatex(text) {
     .replace(/  +/g, ' ')
     .trim();
   text = text.replace(/\x00MATH(\d+)\x00/g, (_, n) => mathSlots[+n]);
+  // Restore escaped dollar signs as literal $
+  text = text.replace(/\x01DOLLAR\x01/g, '$');
   return text;
 }
 
@@ -3324,6 +3328,11 @@ function loadTeX(tex, name, append=false) {
 function latexToHtml(text) {
   if (!text) return '';
 
+  // ── PRE-STEP: Protect escaped dollar signs (\$) from math parsing ──────────
+  // Must happen before any $...$ regex so \$1 isn't treated as math.
+  const ESCAPED_DOLLAR = '\x01DOLLAR\x01';
+  text = text.replace(/\\\$/g, ESCAPED_DOLLAR);
+
   // ── STEP 1: Protect ALL math from text processing ──────────────────────────
   // Use a safe placeholder that won't appear in normal LaTeX text.
   // We use a simple array + index scheme with a marker unlikely to appear in text.
@@ -3589,6 +3598,12 @@ function latexToHtml(text) {
     text = text.replace(slotRe, (_, n) => mathSlots[parseInt(n)]);
   } while (text !== prev);
 
+  // ── POST-STEP: Restore escaped dollar signs ────────────────────────────────
+  // Wrap in <span> so the $ lives in its own text node. KaTeX auto-render
+  // processes text nodes one at a time; an isolated $ with no pair in its
+  // text node is left alone, preventing it from matching real math delimiters.
+  text = text.replace(new RegExp(ESCAPED_DOLLAR, 'g'), () => '<span class="tex-dollar">$</span>');
+
   return text;
 }
 
@@ -3677,7 +3692,8 @@ function renderMath() {
       {left:'\\(',right:'\\)',display:false},
     ],
     macros: KATEX_MACROS,
-    throwOnError: false
+    throwOnError: false,
+    ignoredClasses: ['tex-dollar'],
   };
   for (const el of targets) renderMathInElement(el, opts);
 }
@@ -3741,7 +3757,8 @@ function renderTOC() {
     renderMathInElement(toc, {
       delimiters: [{left:'$',right:'$',display:false}],
       macros: KATEX_MACROS,
-      throwOnError: false
+      throwOnError: false,
+      ignoredClasses: ['tex-dollar'],
     });
   }
 }
@@ -6595,7 +6612,8 @@ function showRefPopup(key) {
           {left: '\\(', right: '\\)', display: false}
         ],
         macros: KATEX_MACROS,
-        throwOnError: false
+        throwOnError: false,
+        ignoredClasses: ['tex-dollar'],
       }));
     }
   }, 50);
@@ -6884,7 +6902,8 @@ function showDefPopup(idx) {
           {left: '\\(', right: '\\)', display: false}
         ],
         macros: KATEX_MACROS,
-        throwOnError: false
+        throwOnError: false,
+        ignoredClasses: ['tex-dollar'],
       }));
     }
   }, 50);
