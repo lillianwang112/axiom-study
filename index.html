@@ -1130,7 +1130,7 @@
   .undo-toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
   .undo-toast button { background: var(--accent); color: var(--bg); border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
   /* ── Notes latex/plain toggle ── */
-  .note-mode-toggle { display: flex; gap: 4px; margin-bottom: 6px; }
+  .note-mode-toggle { display: flex; gap: 4px; margin-bottom: 6px; flex-wrap: wrap; align-items: center; }
   .note-mode-btn { font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 3px 10px; border-radius: 3px; border: 1px solid var(--border); background: none; cursor: pointer; color: var(--text3); transition: all 0.15s; }
   .note-mode-btn.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
 
@@ -1959,6 +1959,10 @@ function getInkEngine(bodyId) {
       canvasHeight: 300,
       undoStack: [],
       pressureEnabled: false,
+      highlightMode: false,
+      _hlOffscreen: null,
+      _hlPts: [],
+      _smoothPressure: 0.5,
       MIN_DIST_SQ: 9,
       MAX_DIST_SQ: 2500,
       _ptsBuf: [],
@@ -1981,33 +1985,76 @@ function getInkEngine(bodyId) {
       flushPts(pts) {
         if (!pts.length || !this.isDrawing || !this.currentStroke) return;
         const ctx = this.ctx;
-        let { lastPt } = this.currentStroke;
-        if (this.pressureEnabled && !this.erasing) {
-          // Pressure-sensitive: each segment gets its own lineWidth
+        let { lastPt, lastMidPt } = this.currentStroke;
+
+        if (this.highlightMode && !this.erasing) {
+          // Highlight: redraw full stroke from snapshot each time to prevent alpha accumulation
+          this._hlPts.push(...pts);
+          if (this._hlOffscreen) {
+            const dpr = window.devicePixelRatio || 1;
+            const cssW = ctx.canvas.width / dpr;
+            const cssH = ctx.canvas.height / dpr;
+            // clearRect in CSS coords (scale transform is active)
+            ctx.clearRect(0, 0, cssW, cssH);
+            // drawImage must specify CSS dest size, otherwise the DPR scale doubles it → zoom bug
+            ctx.drawImage(this._hlOffscreen, 0, 0, cssW, cssH);
+          }
+          ctx.save();
+          ctx.globalAlpha = 0.38;
+          ctx.strokeStyle = this.color;
+          ctx.lineWidth = Math.max(4, this.lineWidth * 4);
+          ctx.lineCap = 'square';
+          ctx.lineJoin = 'round';
+          ctx.beginPath();
+          const hp = this._hlPts;
+          if (hp.length === 1) {
+            ctx.moveTo(hp[0].x, hp[0].y);
+            ctx.lineTo(hp[0].x + 0.1, hp[0].y);
+          } else {
+            ctx.moveTo(hp[0].x, hp[0].y);
+            for (let i = 1; i < hp.length; i++) {
+              const prev = hp[i - 1], curr = hp[i];
+              const mx = (prev.x + curr.x) / 2;
+              const my = (prev.y + curr.y) / 2;
+              ctx.quadraticCurveTo(prev.x, prev.y, mx, my);
+            }
+            ctx.lineTo(hp[hp.length - 1].x, hp[hp.length - 1].y);
+          }
+          ctx.stroke();
+          ctx.restore();
+          lastPt = pts[pts.length - 1];
+        } else if (this.pressureEnabled && !this.erasing) {
+          // Pressure-sensitive: smooth segments sharing midpoints to avoid gaps
           for (const p of pts) {
             const mx = (lastPt.x + p.x) / 2;
             const my = (lastPt.y + p.y) / 2;
-            const avgPressure = ((lastPt.pressure || 0.5) + (p.pressure || 0.5)) / 2;
-            ctx.lineWidth = Math.max(0.5, this.lineWidth * (0.3 + avgPressure * 1.7));
+            // Smooth pressure with exponential moving average
+            const rawPressure = ((lastPt.pressure || 0.5) + (p.pressure || 0.5)) / 2;
+            this._smoothPressure = this._smoothPressure * 0.6 + rawPressure * 0.4;
+            ctx.lineWidth = Math.max(0.5, this.lineWidth * (0.3 + this._smoothPressure * 1.7));
             ctx.beginPath();
-            ctx.moveTo(lastPt.x, lastPt.y);
+            // Start at previous midpoint (or lastPt for first segment) so segments connect seamlessly
+            ctx.moveTo(lastMidPt ? lastMidPt.x : lastPt.x, lastMidPt ? lastMidPt.y : lastPt.y);
             ctx.quadraticCurveTo(lastPt.x, lastPt.y, mx, my);
             ctx.stroke();
+            lastMidPt = { x: mx, y: my };
             lastPt = p;
           }
         } else {
+          // Regular smooth bezier: moveTo previous midpoint, control = lastPt, end = new midpoint
           ctx.beginPath();
-          ctx.moveTo(lastPt.x, lastPt.y);
+          ctx.moveTo(lastMidPt ? lastMidPt.x : lastPt.x, lastMidPt ? lastMidPt.y : lastPt.y);
           for (const p of pts) {
             const mx = (lastPt.x + p.x) / 2;
             const my = (lastPt.y + p.y) / 2;
             ctx.quadraticCurveTo(lastPt.x, lastPt.y, mx, my);
+            lastMidPt = { x: mx, y: my };
             lastPt = p;
           }
           ctx.lineTo(lastPt.x, lastPt.y);
           ctx.stroke();
         }
-        this.currentStroke = { lastPt };
+        this.currentStroke = { lastPt, lastMidPt };
       },
       onPointerDown(e) {
         if (e.pointerType === 'touch') {
@@ -2028,9 +2075,19 @@ function getInkEngine(bodyId) {
           ctx.lineWidth = this.lineWidth;
         }
         const startPt = this.coords(e);
-        this.currentStroke = { lastPt: startPt };
+        this.currentStroke = { lastPt: startPt, lastMidPt: null };
+        this._smoothPressure = startPt.pressure || 0.5;
+        // Highlight mode: capture canvas snapshot for clean alpha compositing
+        if (this.highlightMode && !this.erasing) {
+          const canvas = ctx.canvas;
+          this._hlOffscreen = document.createElement('canvas');
+          this._hlOffscreen.width = canvas.width;
+          this._hlOffscreen.height = canvas.height;
+          this._hlOffscreen.getContext('2d').drawImage(canvas, 0, 0);
+          this._hlPts = [startPt];
+        }
         // Dot for taps - pressure-aware radius when enabled
-        const dotRadius = (this.pressureEnabled && !this.erasing)
+        const dotRadius = (this.pressureEnabled && !this.erasing && !this.highlightMode)
           ? Math.max(0.5, this.lineWidth * (0.3 + (startPt.pressure || 0.5) * 1.7)) / 2
           : ctx.lineWidth / 2;
         ctx.beginPath();
@@ -2060,7 +2117,15 @@ function getInkEngine(bodyId) {
       onPointerUp(e) {
         if (e.pointerId !== this.activePointerId) return;
         this.isDrawing = false; this.isPalm = false; this.activePointerId = null; this.currentStroke = null;
-        if (this.ctx) this.ctx.globalCompositeOperation = 'source-over';
+        if (this.ctx) {
+          this.ctx.globalCompositeOperation = 'source-over';
+          this.ctx.globalAlpha = 1.0;
+          this.ctx.lineCap = 'round';
+          this.ctx.lineJoin = 'round';
+        }
+        // Clean up highlight scratch data
+        this._hlOffscreen = null;
+        this._hlPts = [];
       },
       onPointerCancel(e) { this.onPointerUp(e); },
     };
@@ -4160,6 +4225,8 @@ function renderBlocks(blocks, sectionIdx) {
               <button class="note-mode-btn active" id="nmode-plain-${bodyId}" onclick="setNoteMode('${bodyId}','plain')">Plain Text</button>
               <button class="note-mode-btn" id="nmode-latex-${bodyId}" onclick="setNoteMode('${bodyId}','latex')">LaTeX Preview</button>
               <button class="note-mode-btn" id="nmode-ink-${bodyId}" onclick="setNoteMode('${bodyId}','ink')">✏ Ink</button>
+              <span style="flex:1;"></span>
+              <button class="note-mode-btn" id="content-hide-btn-${bodyId}" onclick="toggleContentHide('${bodyId}')" title="Hide the block content while you write from memory" style="margin-left:auto;">Hide Content</button>
             </div>
             <textarea class="annotation-input" id="note-ta-${bodyId}" placeholder="Notes on this ${label.toLowerCase()}… (supports $LaTeX$)" onchange="saveNote(${sectionIdx},${bi},this.value)" oninput="onNoteInput('${bodyId}')">${b.notes||''}</textarea>
             <div id="note-preview-${bodyId}" style="display:none;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:15px;line-height:1.7;min-height:40px;margin-top:4px;"></div>
@@ -4167,6 +4234,7 @@ function renderBlocks(blocks, sectionIdx) {
               <div class="ink-toolbar" id="ink-tb-${bodyId}">
                 <button class="ink-tool-btn active" id="ink-pen-${bodyId}" onclick="inkSetTool('${bodyId}','pen')">✏ Pen</button>
                 <button class="ink-tool-btn" id="ink-erase-${bodyId}" onclick="inkSetTool('${bodyId}','eraser')">◻ Eraser</button>
+                <button class="ink-tool-btn" id="ink-highlight-${bodyId}" onclick="inkSetTool('${bodyId}','highlight')" title="Highlighter — semi-transparent marker">▬ Highlight</button>
                 <button class="ink-tool-btn" id="ink-pressure-${bodyId}" onclick="inkTogglePressure('${bodyId}')" title="Toggle pressure sensitivity (Apple Pencil / stylus)">⌁ Pressure</button>
                 <div class="ink-size-group" title="Stroke size">
                   <div class="ink-size-dot active" id="ink-sz1-${bodyId}" onclick="inkSetSize('${bodyId}',1,this)" title="Fine"><div class="dot-inner" style="width:3px;height:3px;"></div></div>
@@ -4179,10 +4247,11 @@ function renderBlocks(blocks, sectionIdx) {
                   <div class="ink-color-btn" id="ink-col2-${bodyId}" style="background:#2a5878;" onclick="inkSetColor('${bodyId}',2,'#2a5878',this)" title="Blue"></div>
                   <div class="ink-color-btn" id="ink-col3-${bodyId}" style="background:#3a7a3a;" onclick="inkSetColor('${bodyId}',3,'#3a7a3a',this)" title="Green"></div>
                   <div class="ink-color-btn" id="ink-col4-${bodyId}" style="background:#a03838;" onclick="inkSetColor('${bodyId}',4,'#a03838',this)" title="Red"></div>
+                  <div class="ink-color-btn" id="ink-col5-${bodyId}" style="background:#f0d000;border:1px solid #c8a800;" onclick="inkSetColor('${bodyId}',5,'#f0d000',this)" title="Yellow (highlight)"></div>
                 </div>
                 <span style="flex:1;"></span>
                 <button class="ink-tool-btn" onclick="inkUndo('${bodyId}')">↩ Undo</button>
-                <button class="ink-tool-btn danger" onclick="inkClear('${bodyId}',${sectionIdx},${bi})">Clear</button>
+                <button class="ink-tool-btn danger" id="ink-clear-${bodyId}" onclick="inkClearConfirm('${bodyId}',${sectionIdx},${bi})">Clear</button>
                 <button class="ink-tool-btn" onclick="inkAddCanvas('${bodyId}')" title="Add 300px canvas portion">＋ Canvas</button>
                 <button class="ink-tool-btn danger" onclick="inkRemoveCanvas('${bodyId}')" title="Remove last 300px canvas portion">－ Canvas</button>
               </div>
@@ -4213,6 +4282,16 @@ function toggleBlock(id, headerEl) {
   body.classList.toggle('hidden', !isHidden);
   if(btn) btn.textContent = isHidden ? 'Hide' : 'Reveal';
   if (isHidden) renderMath(); // render LaTeX when revealed
+}
+
+function toggleContentHide(bodyId) {
+  const rendered = document.getElementById('rendered-' + bodyId);
+  const btn = document.getElementById('content-hide-btn-' + bodyId);
+  if (!rendered || !btn) return;
+  const nowHidden = rendered.style.display === 'none';
+  rendered.style.display = nowHidden ? '' : 'none';
+  btn.textContent = nowHidden ? 'Hide Content' : 'Reveal Content';
+  btn.classList.toggle('active', !nowHidden);
 }
 
 // Step-by-step proof reveal
@@ -7359,12 +7438,15 @@ function inkTogglePressure(bodyId) {
 function inkSetTool(bodyId, tool) {
   const eng = getInkEngine(bodyId);
   const wrap = document.getElementById('ink-cw-' + bodyId);
-  const penBtn   = document.getElementById('ink-pen-'   + bodyId);
-  const eraseBtn = document.getElementById('ink-erase-' + bodyId);
-  eng.erasing = (tool === 'eraser');
+  const penBtn       = document.getElementById('ink-pen-'       + bodyId);
+  const eraseBtn     = document.getElementById('ink-erase-'     + bodyId);
+  const highlightBtn = document.getElementById('ink-highlight-' + bodyId);
+  eng.erasing       = (tool === 'eraser');
+  eng.highlightMode = (tool === 'highlight');
   if (wrap) wrap.classList.toggle('eraser-mode', eng.erasing);
-  if (penBtn)   penBtn.classList.toggle('active',  !eng.erasing);
-  if (eraseBtn) eraseBtn.classList.toggle('active', eng.erasing);
+  if (penBtn)       penBtn.classList.toggle('active',       tool === 'pen');
+  if (eraseBtn)     eraseBtn.classList.toggle('active',     tool === 'eraser');
+  if (highlightBtn) highlightBtn.classList.toggle('active', tool === 'highlight');
 }
 
 function inkSetSize(bodyId, sizeIdx, el) {
@@ -7382,14 +7464,19 @@ function inkSetColor(bodyId, idx, color, el) {
   const eng = getInkEngine(bodyId);
   eng.color = color;
   eng.erasing = false;
-  const penBtn = document.getElementById('ink-pen-' + bodyId);
-  const eraseBtn = document.getElementById('ink-erase-' + bodyId);
-  if (penBtn)   penBtn.classList.add('active');
-  if (eraseBtn) eraseBtn.classList.remove('active');
+  // Switching color keeps highlight mode if active; otherwise switches to pen
+  if (!eng.highlightMode) {
+    const penBtn = document.getElementById('ink-pen-' + bodyId);
+    const eraseBtn = document.getElementById('ink-erase-' + bodyId);
+    const highlightBtn = document.getElementById('ink-highlight-' + bodyId);
+    if (penBtn)       penBtn.classList.add('active');
+    if (eraseBtn)     eraseBtn.classList.remove('active');
+    if (highlightBtn) highlightBtn.classList.remove('active');
+  }
   const wrap = document.getElementById('ink-cw-' + bodyId);
   if (wrap) wrap.classList.remove('eraser-mode');
   // Update color dot UI
-  [0,1,2,3,4].forEach(i => {
+  [0,1,2,3,4,5].forEach(i => {
     const d = document.getElementById(`ink-col${i}-${bodyId}`);
     if (d) d.classList.toggle('active', i === idx);
   });
@@ -7420,6 +7507,31 @@ function inkClear(bodyId, si, bi) {
   // Remove "Ink saved" indicator
   const wrap = document.getElementById('ink-wrap-' + bodyId);
   if (wrap) { const lbl = wrap.querySelector('div[style*="text-align:right"]'); if (lbl) lbl.remove(); }
+}
+
+const _inkClearTimers = {};
+function inkClearConfirm(bodyId, si, bi) {
+  const btn = document.getElementById('ink-clear-' + bodyId);
+  if (!btn) { inkClear(bodyId, si, bi); return; }
+  if (btn.dataset.confirming === '1') {
+    // Second click — confirmed
+    clearTimeout(_inkClearTimers[bodyId]);
+    delete _inkClearTimers[bodyId];
+    btn.dataset.confirming = '';
+    btn.textContent = 'Clear';
+    btn.style.outline = '';
+    inkClear(bodyId, si, bi);
+  } else {
+    // First click — ask for confirmation
+    btn.dataset.confirming = '1';
+    btn.textContent = 'Sure?';
+    btn.style.outline = '2px solid var(--red, #a03838)';
+    _inkClearTimers[bodyId] = setTimeout(() => {
+      btn.dataset.confirming = '';
+      btn.textContent = 'Clear';
+      btn.style.outline = '';
+    }, 3000);
+  }
 }
 
 // ── INK CANVAS RESIZE (add/delete portions) ──
