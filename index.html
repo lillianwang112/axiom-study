@@ -1180,6 +1180,11 @@
   .ink-size-dot:hover { border-color: var(--accent); }
   .ink-size-dot.active { border-color: var(--accent); background: var(--accent-dim); }
   .ink-size-dot .dot-inner { background: var(--text); border-radius: 50%; }
+  .ink-page-indicator {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    color: var(--text3); min-width: 26px; text-align: center;
+    letter-spacing: 0.04em; flex-shrink: 0;
+  }
   .ink-canvas-wrap {
     position: relative;
     border: 1px solid var(--border);
@@ -1999,6 +2004,7 @@ function getInkEngine(bodyId) {
       erasing: false,
       canvasHeight: 300,
       undoStack: [],
+      _hasAnyContent: false,
       pressureEnabled: _defs.pressureEnabled || false,
       highlightMode: false,
       _hlOffscreen: null,
@@ -2020,19 +2026,21 @@ function getInkEngine(bodyId) {
       pushUndo() {
         if (!this.ctx) return;
         const c = this.ctx.canvas;
-        if (this.undoStack.length >= 15) this.undoStack.shift();
-        // Store as a canvas snapshot (GPU drawImage copy) instead of toDataURL —
-        // toDataURL synchronously PNG-encodes the full physical canvas on the main thread,
-        // causing visible freezes on retina displays. Canvas copy is near-instant.
+        if (this.undoStack.length >= 12) this.undoStack.shift();
+        // Store at CSS resolution (half dimensions on retina) so each snapshot
+        // is 4× smaller, reducing memory pressure and GC pause frequency.
+        const dpr = window.devicePixelRatio || 1;
         const snap = document.createElement('canvas');
-        snap.width = c.width; snap.height = c.height;
-        snap.getContext('2d').drawImage(c, 0, 0);
+        snap.width = Math.round(c.width / dpr);
+        snap.height = Math.round(c.height / dpr);
+        snap.getContext('2d').drawImage(c, 0, 0, snap.width, snap.height);
         this.undoStack.push(snap);
       },
       flushPts(pts) {
         if (!pts.length || !this.isDrawing || !this.currentStroke) return;
         const ctx = this.ctx;
         let { lastPt, lastMidPt } = this.currentStroke;
+        this._hasAnyContent = true;
 
         if (this.highlightMode && !this.erasing) {
           // Highlight: redraw full stroke from snapshot each time to prevent alpha accumulation
@@ -4302,8 +4310,13 @@ function renderBlocks(blocks, sectionIdx) {
                 <button class="ink-tool-btn" onclick="inkSaveDefaults('${bodyId}')" id="ink-savedef-${bodyId}" title="Save current thickness, color & pressure as defaults for new canvases">⚙ Defaults</button>
                 <button class="ink-tool-btn" onclick="inkUndo('${bodyId}')">↩ Undo</button>
                 <button class="ink-tool-btn danger" id="ink-clear-${bodyId}" onclick="inkClearConfirm('${bodyId}',${sectionIdx},${bi})">Clear</button>
-                <button class="ink-tool-btn" onclick="inkAddCanvas('${bodyId}')" title="Add 300px canvas portion">＋ Canvas</button>
-                <button class="ink-tool-btn danger" onclick="inkRemoveCanvas('${bodyId}')" title="Remove last 300px canvas portion">－ Canvas</button>
+                <div style="display:flex;align-items:center;gap:3px;">
+                  <button class="ink-tool-btn" onclick="inkNavPage('${bodyId}',-1)" title="Previous page" style="padding:4px 7px;">◀</button>
+                  <span class="ink-page-indicator" id="ink-page-${bodyId}">1/1</span>
+                  <button class="ink-tool-btn" onclick="inkNavPage('${bodyId}',1)" title="Next page" style="padding:4px 7px;">▶</button>
+                </div>
+                <button class="ink-tool-btn" onclick="inkAddCanvas('${bodyId}')" title="Add page" style="padding:4px 7px;">＋pg</button>
+                <button class="ink-tool-btn danger" onclick="inkRemoveCanvas('${bodyId}')" title="Remove last page" style="padding:4px 7px;">－pg</button>
               </div>
               <div class="ink-canvas-wrap" id="ink-cw-${bodyId}">
                 <canvas id="ink-cv-${bodyId}" height="300"></canvas>
@@ -5156,8 +5169,13 @@ function _renderProblemWorkArea(p) {
         <button class="ink-tool-btn" onclick="inkSaveDefaults('${inkId}')" id="ink-savedef-${inkId}" title="Save current thickness, color & pressure as defaults for new canvases">⚙ Defaults</button>
         <button class="ink-tool-btn" onclick="inkPworkUndo('${inkId}')">↩ Undo</button>
         <button class="ink-tool-btn danger" onclick="inkPworkClear('${inkId}',${p.id})">Clear</button>
-        <button class="ink-tool-btn" onclick="inkPworkAddCanvas('${inkId}',${p.id})" title="Add 300px canvas portion">＋ Canvas</button>
-        <button class="ink-tool-btn danger" onclick="inkPworkRemoveCanvas('${inkId}',${p.id})" title="Remove last 300px canvas portion">－ Canvas</button>
+        <div style="display:flex;align-items:center;gap:3px;">
+          <button class="ink-tool-btn" onclick="inkNavPage('${inkId}',-1)" title="Previous page" style="padding:4px 7px;">◀</button>
+          <span class="ink-page-indicator" id="ink-page-${inkId}">1/1</span>
+          <button class="ink-tool-btn" onclick="inkNavPage('${inkId}',1)" title="Next page" style="padding:4px 7px;">▶</button>
+        </div>
+        <button class="ink-tool-btn" onclick="inkPworkAddCanvas('${inkId}',${p.id})" title="Add page" style="padding:4px 7px;">＋pg</button>
+        <button class="ink-tool-btn danger" onclick="inkPworkRemoveCanvas('${inkId}',${p.id})" title="Remove last page" style="padding:4px 7px;">－pg</button>
       </div>
       <div class="ink-canvas-wrap" id="ink-cw-${inkId}">
         <canvas id="ink-cv-${inkId}" height="300"></canvas>
@@ -7323,8 +7341,12 @@ function initInkCanvasPwork(inkId, problemId) {
     eng.ctx = ctx;
     eng._id = inkId;
     inkSyncToolbar(inkId);
+    inkUpdatePageIndicator(inkId);
+    const _pWrap = document.getElementById('ink-cw-' + inkId);
+    if (_pWrap) _pWrap.addEventListener('scroll', () => inkUpdatePageIndicator(inkId), { passive: true });
     // Restore saved ink
     if (p?.inkWork) {
+      eng._hasAnyContent = true;
       const img = new Image();
       img.onload = () => { ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(img, 0, 0, canvas.width/dpr, canvas.height/dpr); };
       img.src = p.inkWork;
@@ -7358,13 +7380,15 @@ function inkSavePwork(inkId, problemId) {
   const eng = inkEngines[inkId];
   if (!eng || !eng.ctx) return;
   const canvas = eng.ctx.canvas;
-  const pixels = eng.ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-  const isEmpty = !pixels.some(p => p !== 0);
   const pset = getActivePset();
   const p = pset?.problems?.find(prob => prob.id === problemId);
   if (!p) return;
-  p.inkWork = isEmpty ? null : canvas.toDataURL('image/png');
-  p.inkWorkHeight = isEmpty ? null : (eng.canvasHeight || 300);
+  if (!eng._hasAnyContent) {
+    p.inkWork = null; p.inkWorkHeight = null;
+  } else {
+    p.inkWork = canvas.toDataURL('image/png');
+    p.inkWorkHeight = eng.canvasHeight || 300;
+  }
   markCloudDirty();
 }
 
@@ -7384,6 +7408,7 @@ function inkPworkClear(inkId, problemId) {
   if (!eng || !eng.ctx) return;
   eng.pushUndo();
   eng.ctx.clearRect(0,0,eng.ctx.canvas.width,eng.ctx.canvas.height);
+  eng._hasAnyContent = false;
   inkSavePwork(inkId, problemId);
 }
 
@@ -7420,6 +7445,9 @@ function initInkCanvas(bodyId) {
     eng.ctx = ctx;
     eng._id = bodyId;
     inkSyncToolbar(bodyId);
+    inkUpdatePageIndicator(bodyId);
+    const _bWrap = document.getElementById('ink-cw-' + bodyId);
+    if (_bWrap) _bWrap.addEventListener('scroll', () => inkUpdatePageIndicator(bodyId), { passive: true });
     // Restore saved ink if any
     inkRestoreFromState(bodyId);
     // Attach pointer listeners
@@ -7456,6 +7484,7 @@ function inkRestoreFromState(bodyId) {
   if (!block || !block.inkNotes) return;
   const eng = getInkEngine(bodyId);
   if (!eng.ctx) return;
+  eng._hasAnyContent = true;
   const img = new Image();
   img.onload = () => {
     eng.ctx.clearRect(0, 0, eng.ctx.canvas.width, eng.ctx.canvas.height);
@@ -7468,12 +7497,10 @@ function inkSave(bodyId, si, bi) {
   const eng = inkEngines[bodyId];
   if (!eng || !eng.ctx) return;
   const canvas = eng.ctx.canvas;
-  // Check if canvas is blank (skip saving empty canvases)
-  const pixels = eng.ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-  const isEmpty = !pixels.some(p => p !== 0);
   const course = state.courses.find(c => c.id === state.activeCourse);
   if (!course?.sections?.[si]?.blocks?.[bi]) return;
-  if (isEmpty) {
+  // Use _hasAnyContent flag instead of getImageData (avoids full GPU→CPU pixel readback)
+  if (!eng._hasAnyContent) {
     course.sections[si].blocks[bi].inkNotes = null;
     course.sections[si].blocks[bi].inkNotesHeight = null;
   } else {
@@ -7579,6 +7606,27 @@ function inkUndo(bodyId) {
   if (parts.length >= 3) inkSave(bodyId, parseInt(parts[1]), parseInt(parts[2]));
 }
 
+function inkNavPage(bodyId, delta) {
+  const eng = getInkEngine(bodyId);
+  const wrap = document.getElementById('ink-cw-' + bodyId);
+  if (!wrap || !eng) return;
+  const totalPages = Math.max(1, Math.round(eng.canvasHeight / INK_CANVAS_STEP));
+  const currentPage = Math.round(wrap.scrollTop / INK_CANVAS_STEP);
+  const newPage = Math.max(0, Math.min(totalPages - 1, currentPage + delta));
+  wrap.scrollTo({ top: newPage * INK_CANVAS_STEP, behavior: 'smooth' });
+  setTimeout(() => inkUpdatePageIndicator(bodyId), 350);
+}
+
+function inkUpdatePageIndicator(bodyId) {
+  const eng = inkEngines[bodyId];
+  const wrap = document.getElementById('ink-cw-' + bodyId);
+  const el = document.getElementById('ink-page-' + bodyId);
+  if (!wrap || !el || !eng) return;
+  const totalPages = Math.max(1, Math.round(eng.canvasHeight / INK_CANVAS_STEP));
+  const currentPage = Math.min(totalPages, Math.round(wrap.scrollTop / INK_CANVAS_STEP) + 1);
+  el.textContent = currentPage + '/' + totalPages;
+}
+
 function inkSyncToolbar(bodyId) {
   const eng = inkEngines[bodyId];
   if (!eng) return;
@@ -7628,6 +7676,7 @@ function inkClear(bodyId, si, bi) {
   if (!eng || !eng.ctx) return;
   eng.pushUndo();
   eng.ctx.clearRect(0, 0, eng.ctx.canvas.width, eng.ctx.canvas.height);
+  eng._hasAnyContent = false;
   inkSave(bodyId, si, bi);
   // Remove "Ink saved" indicator
   const wrap = document.getElementById('ink-wrap-' + bodyId);
@@ -7694,9 +7743,8 @@ function inkAddCanvas(bodyId) {
   const eng = inkEngines[bodyId];
   if (!eng || !eng.ctx) return;
   inkResizeCanvas(bodyId, (eng.canvasHeight || INK_CANVAS_STEP) + INK_CANVAS_STEP);
-  // Scroll the wrap to show the new portion
   const wrap = document.getElementById('ink-cw-' + bodyId);
-  if (wrap) setTimeout(() => { wrap.scrollTop = wrap.scrollHeight; }, 50);
+  if (wrap) setTimeout(() => { wrap.scrollTo({ top: wrap.scrollHeight, behavior: 'smooth' }); inkUpdatePageIndicator(bodyId); }, 100);
   scheduleInkSave(bodyId);
 }
 
@@ -7704,8 +7752,9 @@ function inkRemoveCanvas(bodyId) {
   const eng = inkEngines[bodyId];
   if (!eng || !eng.ctx) return;
   const currentH = eng.canvasHeight || INK_CANVAS_STEP;
-  if (currentH <= INK_CANVAS_STEP) return; // already at minimum
+  if (currentH <= INK_CANVAS_STEP) return;
   inkResizeCanvas(bodyId, currentH - INK_CANVAS_STEP);
+  setTimeout(() => inkUpdatePageIndicator(bodyId), 100);
   scheduleInkSave(bodyId);
 }
 
@@ -7714,7 +7763,7 @@ function inkPworkAddCanvas(inkId, problemId) {
   if (!eng || !eng.ctx) return;
   inkResizeCanvas(inkId, (eng.canvasHeight || INK_CANVAS_STEP) + INK_CANVAS_STEP);
   const wrap = document.getElementById('ink-cw-' + inkId);
-  if (wrap) setTimeout(() => { wrap.scrollTop = wrap.scrollHeight; }, 50);
+  if (wrap) setTimeout(() => { wrap.scrollTo({ top: wrap.scrollHeight, behavior: 'smooth' }); inkUpdatePageIndicator(inkId); }, 100);
   scheduleInkSavePwork(inkId, problemId);
 }
 
@@ -7724,6 +7773,7 @@ function inkPworkRemoveCanvas(inkId, problemId) {
   const currentH = eng.canvasHeight || INK_CANVAS_STEP;
   if (currentH <= INK_CANVAS_STEP) return;
   inkResizeCanvas(inkId, currentH - INK_CANVAS_STEP);
+  setTimeout(() => inkUpdatePageIndicator(inkId), 100);
   scheduleInkSavePwork(inkId, problemId);
 }
 
