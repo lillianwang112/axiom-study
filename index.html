@@ -1211,6 +1211,32 @@
     flex-shrink: 0;
   }
   .ink-color-btn.active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
+  .ink-color-custom {
+    position: relative; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; color: var(--text3);
+    background: var(--bg) !important;
+    border-style: dashed !important;
+  }
+  .ink-color-custom input[type="color"] {
+    position: absolute; opacity: 0; width: 100%; height: 100%;
+    cursor: pointer; border: none; padding: 0;
+  }
+  .ink-thickness-slider {
+    -webkit-appearance: none; appearance: none;
+    width: 72px; height: 3px;
+    background: var(--border); border-radius: 2px;
+    outline: none; cursor: pointer;
+  }
+  .ink-thickness-slider::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 13px; height: 13px; border-radius: 50%;
+    background: var(--accent); cursor: pointer; border: none;
+  }
+  .ink-thickness-slider::-moz-range-thumb {
+    width: 13px; height: 13px; border-radius: 50%;
+    background: var(--accent); cursor: pointer; border: none;
+  }
   /* ── Block read checkbox ── */
   .blk-check { width:16px; height:16px; border-radius:3px; border:2px solid var(--border2); background:none; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:all 0.2s; flex-shrink:0; padding:0; font-size:10px; color:transparent; margin-right:6px; }
   .blk-check.checked { background:var(--green-dim); border-color:var(--green); color:var(--green); }
@@ -2057,6 +2083,11 @@ function getInkEngine(bodyId) {
         this.currentStroke = { lastPt, lastMidPt };
       },
       onPointerDown(e) {
+        // Apple Pencil Pro squeeze (barrel button) → toggle eraser
+        if (e.pointerType === 'pen' && e.button === 1) {
+          if (this._id) inkSetTool(this._id, this.erasing ? 'pen' : 'eraser');
+          return;
+        }
         if (e.pointerType === 'touch') {
           if ((e.width > 80 || e.height > 80) && e.width > 0 && e.height > 0) { this.isPalm = true; return; }
         }
@@ -4236,10 +4267,8 @@ function renderBlocks(blocks, sectionIdx) {
                 <button class="ink-tool-btn" id="ink-erase-${bodyId}" onclick="inkSetTool('${bodyId}','eraser')">◻ Eraser</button>
                 <button class="ink-tool-btn" id="ink-highlight-${bodyId}" onclick="inkSetTool('${bodyId}','highlight')" title="Highlighter — semi-transparent marker">▬ Highlight</button>
                 <button class="ink-tool-btn" id="ink-pressure-${bodyId}" onclick="inkTogglePressure('${bodyId}')" title="Toggle pressure sensitivity (Apple Pencil / stylus)">⌁ Pressure</button>
-                <div class="ink-size-group" title="Stroke size">
-                  <div class="ink-size-dot active" id="ink-sz1-${bodyId}" onclick="inkSetSize('${bodyId}',1,this)" title="Fine"><div class="dot-inner" style="width:3px;height:3px;"></div></div>
-                  <div class="ink-size-dot" id="ink-sz2-${bodyId}" onclick="inkSetSize('${bodyId}',2,this)" title="Medium"><div class="dot-inner" style="width:5px;height:5px;"></div></div>
-                  <div class="ink-size-dot" id="ink-sz3-${bodyId}" onclick="inkSetSize('${bodyId}',3,this)" title="Thick"><div class="dot-inner" style="width:9px;height:9px;"></div></div>
+                <div class="ink-size-group" title="Stroke thickness">
+                  <input type="range" min="1" max="20" step="0.5" value="2" class="ink-thickness-slider" id="ink-thick-${bodyId}" oninput="inkSetThickness('${bodyId}',this.value)">
                 </div>
                 <div style="display:flex;gap:5px;align-items:center;margin-left:2px;" title="Color">
                   <div class="ink-color-btn active" id="ink-col0-${bodyId}" style="background:var(--text);" onclick="inkSetColor('${bodyId}',0,document.documentElement.getAttribute('data-theme')==='dark'?'#e8e0d0':'#2a2520',this)" title="Default"></div>
@@ -4248,6 +4277,7 @@ function renderBlocks(blocks, sectionIdx) {
                   <div class="ink-color-btn" id="ink-col3-${bodyId}" style="background:#3a7a3a;" onclick="inkSetColor('${bodyId}',3,'#3a7a3a',this)" title="Green"></div>
                   <div class="ink-color-btn" id="ink-col4-${bodyId}" style="background:#a03838;" onclick="inkSetColor('${bodyId}',4,'#a03838',this)" title="Red"></div>
                   <div class="ink-color-btn" id="ink-col5-${bodyId}" style="background:#f0d000;border:1px solid #c8a800;" onclick="inkSetColor('${bodyId}',5,'#f0d000',this)" title="Yellow (highlight)"></div>
+                  <label class="ink-color-btn ink-color-custom" id="ink-colcustom-${bodyId}" title="Custom color">+<input type="color" id="ink-colorpicker-${bodyId}" oninput="inkSetCustomColor('${bodyId}',this.value,this.parentElement)"></label>
                 </div>
                 <span style="flex:1;"></span>
                 <button class="ink-tool-btn" onclick="inkUndo('${bodyId}')">↩ Undo</button>
@@ -5091,10 +5121,8 @@ function _renderProblemWorkArea(p) {
         <button class="ink-tool-btn active" id="ink-pen-${inkId}" onclick="inkSetTool('${inkId}','pen')">✏ Pen</button>
         <button class="ink-tool-btn" id="ink-erase-${inkId}" onclick="inkSetTool('${inkId}','eraser')">◻ Eraser</button>
         <button class="ink-tool-btn" id="ink-pressure-${inkId}" onclick="inkTogglePressure('${inkId}')" title="Toggle pressure sensitivity (Apple Pencil / stylus)">⌁ Pressure</button>
-        <div class="ink-size-group">
-          <div class="ink-size-dot active" id="ink-sz1-${inkId}" onclick="inkSetSize('${inkId}',1,this)" title="Fine"><div class="dot-inner" style="width:3px;height:3px;"></div></div>
-          <div class="ink-size-dot" id="ink-sz2-${inkId}" onclick="inkSetSize('${inkId}',2,this)" title="Medium"><div class="dot-inner" style="width:5px;height:5px;"></div></div>
-          <div class="ink-size-dot" id="ink-sz3-${inkId}" onclick="inkSetSize('${inkId}',3,this)" title="Thick"><div class="dot-inner" style="width:9px;height:9px;"></div></div>
+        <div class="ink-size-group" title="Stroke thickness">
+          <input type="range" min="1" max="20" step="0.5" value="2" class="ink-thickness-slider" id="ink-thick-${inkId}" oninput="inkSetThickness('${inkId}',this.value)">
         </div>
         <div style="display:flex;gap:5px;align-items:center;margin-left:2px;">
           <div class="ink-color-btn active" id="ink-col0-${inkId}" style="background:var(--text);" onclick="inkSetColor('${inkId}',0,document.documentElement.getAttribute('data-theme')==='dark'?'#e8e0d0':'#2a2520',this)"></div>
@@ -5102,6 +5130,7 @@ function _renderProblemWorkArea(p) {
           <div class="ink-color-btn" id="ink-col2-${inkId}" style="background:#2a5878;" onclick="inkSetColor('${inkId}',2,'#2a5878',this)"></div>
           <div class="ink-color-btn" id="ink-col3-${inkId}" style="background:#3a7a3a;" onclick="inkSetColor('${inkId}',3,'#3a7a3a',this)"></div>
           <div class="ink-color-btn" id="ink-col4-${inkId}" style="background:#a03838;" onclick="inkSetColor('${inkId}',4,'#a03838',this)"></div>
+          <label class="ink-color-btn ink-color-custom" id="ink-colcustom-${inkId}" title="Custom color">+<input type="color" id="ink-colorpicker-${inkId}" oninput="inkSetCustomColor('${inkId}',this.value,this.parentElement)"></label>
         </div>
         <span style="flex:1;"></span>
         <button class="ink-tool-btn" onclick="inkPworkUndo('${inkId}')">↩ Undo</button>
@@ -7271,6 +7300,7 @@ function initInkCanvasPwork(inkId, problemId) {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     eng.ctx = ctx;
+    eng._id = inkId;
     // Restore saved ink
     if (p?.inkWork) {
       const img = new Image();
@@ -7365,6 +7395,7 @@ function initInkCanvas(bodyId) {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     eng.ctx = ctx;
+    eng._id = bodyId;
     // Restore saved ink if any
     inkRestoreFromState(bodyId);
     // Attach pointer listeners
@@ -7480,6 +7511,35 @@ function inkSetColor(bodyId, idx, color, el) {
     const d = document.getElementById(`ink-col${i}-${bodyId}`);
     if (d) d.classList.toggle('active', i === idx);
   });
+  const customBtn = document.getElementById(`ink-colcustom-${bodyId}`);
+  if (customBtn) customBtn.classList.remove('active');
+}
+
+function inkSetThickness(bodyId, value) {
+  const eng = getInkEngine(bodyId);
+  eng.lineWidth = parseFloat(value);
+}
+
+function inkSetCustomColor(bodyId, color, el) {
+  const eng = getInkEngine(bodyId);
+  eng.color = color;
+  eng.erasing = false;
+  if (!eng.highlightMode) {
+    const penBtn = document.getElementById('ink-pen-' + bodyId);
+    const eraseBtn = document.getElementById('ink-erase-' + bodyId);
+    const highlightBtn = document.getElementById('ink-highlight-' + bodyId);
+    if (penBtn)       penBtn.classList.add('active');
+    if (eraseBtn)     eraseBtn.classList.remove('active');
+    if (highlightBtn) highlightBtn.classList.remove('active');
+  }
+  const wrap = document.getElementById('ink-cw-' + bodyId);
+  if (wrap) wrap.classList.remove('eraser-mode');
+  // Deactivate preset swatches, activate custom
+  [0,1,2,3,4,5].forEach(i => {
+    const d = document.getElementById(`ink-col${i}-${bodyId}`);
+    if (d) d.classList.remove('active');
+  });
+  if (el) { el.classList.add('active'); el.style.background = color; }
 }
 
 function inkUndo(bodyId) {
