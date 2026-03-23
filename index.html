@@ -1970,8 +1970,20 @@ let collapsedChapters = {};
 
 // ── INK ENGINE REGISTRY (declared early, engine code defined later) ──
 const inkEngines = {};
+let _inkLastActiveId = null;
+// Single document-level listener for Apple Pencil Pro squeeze (barrel button = pen button 1).
+// The squeeze fires on whatever element the pencil is over, not necessarily the canvas,
+// so we catch it here and route to the last-active engine.
+document.addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'pen' || e.button !== 1) return;
+  if (!_inkLastActiveId) return;
+  const _eng = inkEngines[_inkLastActiveId];
+  if (_eng) inkSetTool(_inkLastActiveId, _eng.erasing ? 'pen' : 'eraser');
+});
 function getInkEngine(bodyId) {
   if (!inkEngines[bodyId]) {
+    const _defs = JSON.parse(localStorage.getItem('inkDefaults') || '{}');
+    const _dark = document.documentElement.getAttribute('data-theme') === 'dark';
     inkEngines[bodyId] = {
       isDrawing: false,
       isPalm: false,
@@ -1979,12 +1991,12 @@ function getInkEngine(bodyId) {
       currentStroke: null,
       ctx: null,
       rect: null,
-      color: document.documentElement.getAttribute('data-theme') === 'dark' ? '#e8e0d0' : '#2a2520',
-      lineWidth: 2,
+      color: _defs.color || (_dark ? '#e8e0d0' : '#2a2520'),
+      lineWidth: _defs.lineWidth || 2,
       erasing: false,
       canvasHeight: 300,
       undoStack: [],
-      pressureEnabled: false,
+      pressureEnabled: _defs.pressureEnabled || false,
       highlightMode: false,
       _hlOffscreen: null,
       _hlPts: [],
@@ -2083,14 +2095,12 @@ function getInkEngine(bodyId) {
         this.currentStroke = { lastPt, lastMidPt };
       },
       onPointerDown(e) {
-        // Apple Pencil Pro squeeze (barrel button) → toggle eraser
-        if (e.pointerType === 'pen' && e.button === 1) {
-          if (this._id) inkSetTool(this._id, this.erasing ? 'pen' : 'eraser');
-          return;
-        }
         if (e.pointerType === 'touch') {
           if ((e.width > 80 || e.height > 80) && e.width > 0 && e.height > 0) { this.isPalm = true; return; }
         }
+        // Barrel button (Apple Pencil Pro squeeze) is handled by the document-level listener
+        if (e.button === 1) return;
+        if (this._id) _inkLastActiveId = this._id;
         this.isPalm = false;
         this.pushUndo();
         this.isDrawing = true;
@@ -4280,6 +4290,7 @@ function renderBlocks(blocks, sectionIdx) {
                   <label class="ink-color-btn ink-color-custom" id="ink-colcustom-${bodyId}" title="Custom color">+<input type="color" id="ink-colorpicker-${bodyId}" oninput="inkSetCustomColor('${bodyId}',this.value,this.parentElement)"></label>
                 </div>
                 <span style="flex:1;"></span>
+                <button class="ink-tool-btn" onclick="inkSaveDefaults('${bodyId}')" id="ink-savedef-${bodyId}" title="Save current thickness, color & pressure as defaults for new canvases">⚙ Defaults</button>
                 <button class="ink-tool-btn" onclick="inkUndo('${bodyId}')">↩ Undo</button>
                 <button class="ink-tool-btn danger" id="ink-clear-${bodyId}" onclick="inkClearConfirm('${bodyId}',${sectionIdx},${bi})">Clear</button>
                 <button class="ink-tool-btn" onclick="inkAddCanvas('${bodyId}')" title="Add 300px canvas portion">＋ Canvas</button>
@@ -5133,6 +5144,7 @@ function _renderProblemWorkArea(p) {
           <label class="ink-color-btn ink-color-custom" id="ink-colcustom-${inkId}" title="Custom color">+<input type="color" id="ink-colorpicker-${inkId}" oninput="inkSetCustomColor('${inkId}',this.value,this.parentElement)"></label>
         </div>
         <span style="flex:1;"></span>
+        <button class="ink-tool-btn" onclick="inkSaveDefaults('${inkId}')" id="ink-savedef-${inkId}" title="Save current thickness, color & pressure as defaults for new canvases">⚙ Defaults</button>
         <button class="ink-tool-btn" onclick="inkPworkUndo('${inkId}')">↩ Undo</button>
         <button class="ink-tool-btn danger" onclick="inkPworkClear('${inkId}',${p.id})">Clear</button>
         <button class="ink-tool-btn" onclick="inkPworkAddCanvas('${inkId}',${p.id})" title="Add 300px canvas portion">＋ Canvas</button>
@@ -7301,6 +7313,7 @@ function initInkCanvasPwork(inkId, problemId) {
     ctx.lineJoin = 'round';
     eng.ctx = ctx;
     eng._id = inkId;
+    inkSyncToolbar(inkId);
     // Restore saved ink
     if (p?.inkWork) {
       const img = new Image();
@@ -7396,6 +7409,7 @@ function initInkCanvas(bodyId) {
     ctx.lineJoin = 'round';
     eng.ctx = ctx;
     eng._id = bodyId;
+    inkSyncToolbar(bodyId);
     // Restore saved ink if any
     inkRestoreFromState(bodyId);
     // Attach pointer listeners
@@ -7556,6 +7570,50 @@ function inkUndo(bodyId) {
     if (parts.length >= 3) inkSave(bodyId, parseInt(parts[1]), parseInt(parts[2]));
   };
   img.src = prev;
+}
+
+function inkSyncToolbar(bodyId) {
+  const eng = inkEngines[bodyId];
+  if (!eng) return;
+  // Thickness slider
+  const slider = document.getElementById('ink-thick-' + bodyId);
+  if (slider) slider.value = eng.lineWidth;
+  // Pressure button
+  const pressBtn = document.getElementById('ink-pressure-' + bodyId);
+  if (pressBtn) pressBtn.classList.toggle('active', eng.pressureEnabled);
+  // Color: check presets then fall back to custom
+  const presetMap = { 0: ['#e8e0d0','#2a2520'], 1: ['#a0622a'], 2: ['#2a5878'], 3: ['#3a7a3a'], 4: ['#a03838'], 5: ['#f0d000'] };
+  let matchIdx = -1;
+  for (const [idx, colors] of Object.entries(presetMap)) {
+    if (colors.includes(eng.color)) { matchIdx = parseInt(idx); break; }
+  }
+  [0,1,2,3,4,5].forEach(i => {
+    const d = document.getElementById(`ink-col${i}-${bodyId}`);
+    if (d) d.classList.toggle('active', i === matchIdx);
+  });
+  const customBtn = document.getElementById(`ink-colcustom-${bodyId}`);
+  if (customBtn) {
+    customBtn.classList.toggle('active', matchIdx === -1);
+    if (matchIdx === -1) customBtn.style.background = eng.color;
+    const picker = document.getElementById(`ink-colorpicker-${bodyId}`);
+    if (picker) picker.value = eng.color;
+  }
+}
+
+function inkSaveDefaults(bodyId) {
+  const eng = getInkEngine(bodyId);
+  localStorage.setItem('inkDefaults', JSON.stringify({
+    lineWidth: eng.lineWidth,
+    color: eng.color,
+    pressureEnabled: eng.pressureEnabled
+  }));
+  const btn = document.getElementById('ink-savedef-' + bodyId);
+  if (btn) {
+    const orig = btn.textContent;
+    btn.textContent = '✓ Saved';
+    btn.classList.add('active');
+    setTimeout(() => { btn.textContent = orig; btn.classList.remove('active'); }, 1400);
+  }
 }
 
 function inkClear(bodyId, si, bi) {
