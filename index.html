@@ -1981,7 +1981,7 @@ let _inkLastActiveId = null;
 // lands on whatever element the pencil hovers over, which may not be the ink canvas.
 // Falls back to any initialized engine if no canvas has been drawn on yet.
 window.addEventListener('pointerdown', (e) => {
-  if (e.pointerType !== 'pen' || e.button !== 1) return;
+  if (e.pointerType !== 'pen' || (e.button !== 1 && e.button !== 5)) return;
   e.preventDefault(); // suppress any system default for the squeeze gesture
   const targetId = _inkLastActiveId || Object.keys(inkEngines).find(id => inkEngines[id].ctx);
   if (!targetId) return;
