@@ -1980,9 +1980,14 @@ let _inkLastActiveId = null;
 // Uses window capture (fires before any element handler) since the barrel-button pointerdown
 // lands on whatever element the pencil hovers over, which may not be the ink canvas.
 // Falls back to any initialized engine if no canvas has been drawn on yet.
+//
+// Detection: Apple Pencil Pro squeeze fires as pointerType 'pen' with button = 5 on most
+// iPadOS versions.  Some versions report button = 1 (middle) instead.  We accept either
+// non-primary pen button (anything other than 0) to be safe.
 window.addEventListener('pointerdown', (e) => {
-  if (e.pointerType !== 'pen' || (e.button !== 1 && e.button !== 5)) return;
-  e.preventDefault(); // suppress any system default for the squeeze gesture
+  if (e.pointerType !== 'pen' || e.button === 0) return; // only non-primary pen buttons
+  e.preventDefault();   // suppress system default for the squeeze gesture
+  e.stopPropagation();  // prevent the canvas onPointerDown from also firing
   const targetId = _inkLastActiveId || Object.keys(inkEngines).find(id => inkEngines[id].ctx);
   if (!targetId) return;
   const _eng = inkEngines[targetId];
@@ -2115,8 +2120,8 @@ function getInkEngine(bodyId) {
         if (e.pointerType === 'touch') {
           if ((e.width > 80 || e.height > 80) && e.width > 0 && e.height > 0) { this.isPalm = true; return; }
         }
-        // Barrel button (Apple Pencil Pro squeeze) is handled by the document-level listener
-        if (e.button === 1) return;
+        // Barrel button / Apple Pencil Pro squeeze is handled by the window-level listener
+        if (e.pointerType === 'pen' && e.button !== 0) return;
         if (this._id) _inkLastActiveId = this._id;
         this.isPalm = false;
         this.pushUndo();
