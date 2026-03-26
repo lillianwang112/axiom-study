@@ -1202,6 +1202,7 @@
   }
   .ink-canvas-wrap::-webkit-scrollbar { display: none; }
   .ink-canvas-wrap.eraser-mode { cursor: cell; }
+  .ink-canvas-wrap.selection-mode { cursor: crosshair; }
   /* Custom scrollbar overlay – always visible on all devices */
   .ink-custom-scrollbar {
     position: absolute;
@@ -2055,6 +2056,16 @@ function getInkEngine(bodyId) {
       MIN_DIST_SQ: 9,
       MAX_DIST_SQ: 2500,
       _ptsBuf: [],
+      // Selection tool state
+      selTool: null,      // 'box' | 'lasso' | null
+      selState: null,     // 'drawing' | 'selected' | null
+      selRect: null,      // { x, y, w, h } in CSS coords
+      selPoints: null,    // lasso points array
+      _selBgImg: null,    // HTMLImageElement snapshot of canvas before selection started
+      _selImageData: null,// offscreen canvas holding the extracted selection pixels
+      _selDragStart: null,// { x, y } pointer coords at drag start
+      _selDragOrigin: null,// { x, y } selRect origin at drag start
+      _selHandle: null,   // 'nw'|'ne'|'sw'|'se'|null for resize
       coords(e) {
         const r = this.rect;
         const canvas = this.ctx.canvas;
@@ -2069,13 +2080,11 @@ function getInkEngine(bodyId) {
         if (!this.ctx) return;
         const c = this.ctx.canvas;
         if (this.undoStack.length >= 12) this.undoStack.shift();
-        // Store at CSS resolution (half dimensions on retina) so each snapshot
-        // is 4× smaller, reducing memory pressure and GC pause frequency.
-        const dpr = window.devicePixelRatio || 1;
+        // Store at full physical resolution to avoid blurriness when restoring.
         const snap = document.createElement('canvas');
-        snap.width = Math.round(c.width / dpr);
-        snap.height = Math.round(c.height / dpr);
-        snap.getContext('2d').drawImage(c, 0, 0, snap.width, snap.height);
+        snap.width = c.width;
+        snap.height = c.height;
+        snap.getContext('2d').drawImage(c, 0, 0, c.width, c.height);
         this.undoStack.push(snap);
       },
       flushPts(pts) {
@@ -2153,6 +2162,114 @@ function getInkEngine(bodyId) {
         }
         this.currentStroke = { lastPt, lastMidPt };
       },
+      // ── Selection helpers ──
+      _selDrawUI() {
+        if (!this.selRect || !this.ctx) return;
+        const ctx = this.ctx; const r = this.selRect;
+        // Draw floating selection content
+        if (this._selImageData) {
+          ctx.save();
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          const dpr = window.devicePixelRatio || 1;
+          ctx.drawImage(this._selImageData, r.x * dpr, r.y * dpr, r.w * dpr, r.h * dpr);
+          ctx.restore();
+        }
+        // Dashed selection border + handles
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = '#2a86ff';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 4]);
+        ctx.strokeRect(r.x, r.y, r.w, r.h);
+        ctx.setLineDash([]);
+        const hs = 8;
+        [[r.x, r.y, 'nw'], [r.x + r.w, r.y, 'ne'], [r.x, r.y + r.h, 'sw'], [r.x + r.w, r.y + r.h, 'se']].forEach(([hx, hy]) => {
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(hx - hs/2, hy - hs/2, hs, hs);
+          ctx.strokeStyle = '#2a86ff';
+          ctx.strokeRect(hx - hs/2, hy - hs/2, hs, hs);
+        });
+        ctx.restore();
+      },
+      _selRestoreBg() {
+        if (!this._selBgImg || !this.ctx) return;
+        const ctx = this.ctx; const canvas = ctx.canvas;
+        ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(this._selBgImg, 0, 0, canvas.width, canvas.height);
+        ctx.restore();
+      },
+      _selHitHandle(px, py) {
+        if (!this.selRect) return null;
+        const r = this.selRect; const hs = 12;
+        const corners = [
+          [r.x, r.y, 'nw'], [r.x + r.w, r.y, 'ne'],
+          [r.x, r.y + r.h, 'sw'], [r.x + r.w, r.y + r.h, 'se'],
+        ];
+        for (const [hx, hy, name] of corners) {
+          if (Math.abs(px - hx) <= hs && Math.abs(py - hy) <= hs) return name;
+        }
+        return null;
+      },
+      _selInsideRect(px, py) {
+        if (!this.selRect) return false;
+        const r = this.selRect;
+        return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+      },
+      _selExtract() {
+        // Extract pixels within selection from main canvas into _selImageData offscreen canvas.
+        if (!this.ctx || !this.selRect) return;
+        const ctx = this.ctx; const canvas = ctx.canvas;
+        const dpr = window.devicePixelRatio || 1;
+        const r = this.selRect;
+        const pw = Math.max(1, Math.round(r.w * dpr));
+        const ph = Math.max(1, Math.round(r.h * dpr));
+        const off = document.createElement('canvas');
+        off.width = pw; off.height = ph;
+        if (this.selTool === 'lasso' && this.selPoints && this.selPoints.length > 2) {
+          const octx = off.getContext('2d');
+          octx.save();
+          octx.scale(dpr, dpr);
+          octx.beginPath();
+          octx.moveTo(this.selPoints[0].x - r.x, this.selPoints[0].y - r.y);
+          this.selPoints.forEach(p => octx.lineTo(p.x - r.x, p.y - r.y));
+          octx.closePath();
+          octx.clip();
+          octx.scale(1/dpr, 1/dpr); // draw at physical resolution
+          octx.drawImage(canvas, -r.x * dpr, -r.y * dpr, canvas.width, canvas.height);
+          octx.restore();
+        } else {
+          off.getContext('2d').drawImage(canvas, r.x * dpr, r.y * dpr, pw, ph, 0, 0, pw, ph);
+        }
+        this._selImageData = off;
+        // Clear extracted region from main canvas
+        ctx.save(); ctx.globalCompositeOperation = 'source-over';
+        if (this.selTool === 'lasso' && this.selPoints && this.selPoints.length > 2) {
+          ctx.beginPath();
+          ctx.moveTo(this.selPoints[0].x, this.selPoints[0].y);
+          this.selPoints.forEach(p => ctx.lineTo(p.x, p.y));
+          ctx.closePath();
+          ctx.save(); ctx.globalCompositeOperation = 'destination-out'; ctx.fill(); ctx.restore();
+        } else {
+          ctx.clearRect(r.x, r.y, r.w, r.h);
+        }
+        ctx.restore();
+      },
+      _selCommit() {
+        if (!this.ctx) return;
+        if (this._selImageData && this.selRect) {
+          const ctx = this.ctx; const r = this.selRect;
+          const dpr = window.devicePixelRatio || 1;
+          ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.drawImage(this._selImageData, r.x * dpr, r.y * dpr, r.w * dpr, r.h * dpr);
+          ctx.restore();
+          this._hasAnyContent = true;
+        }
+        this.selState = null; this.selRect = null; this.selPoints = null;
+        this._selBgImg = null; this._selImageData = null;
+        this._selDragStart = null; this._selDragOrigin = null; this._selHandle = null;
+      },
       onPointerDown(e) {
         if (e.pointerType === 'touch') {
           if ((e.width > 80 || e.height > 80) && e.width > 0 && e.height > 0) { this.isPalm = true; return; }
@@ -2161,10 +2278,46 @@ function getInkEngine(bodyId) {
         if (e.pointerType === 'pen' && e.button !== 0) return;
         if (this._id) _inkLastActiveId = this._id;
         this.isPalm = false;
+        this.rect = this.ctx.canvas.getBoundingClientRect();
+        const pt = this.coords(e);
+
+        // ── Selection mode ──
+        if (this.selTool) {
+          this.activePointerId = e.pointerId;
+          if (this.selState === 'selected') {
+            const handle = this._selHitHandle(pt.x, pt.y);
+            if (handle) {
+              this._selHandle = handle;
+              this._selDragStart = { x: pt.x, y: pt.y };
+              this._selDragOrigin = { ...this.selRect };
+              return;
+            }
+            if (this._selInsideRect(pt.x, pt.y)) {
+              this._selDragStart = { x: pt.x, y: pt.y };
+              this._selDragOrigin = { x: this.selRect.x, y: this.selRect.y };
+              this._selHandle = null;
+              return;
+            }
+            // Click outside: commit and start new selection
+            this._selCommit();
+          }
+          // Start drawing selection
+          this.pushUndo();
+          // Snapshot background for live move preview
+          const bgSnap = document.createElement('canvas');
+          bgSnap.width = this.ctx.canvas.width; bgSnap.height = this.ctx.canvas.height;
+          bgSnap.getContext('2d').drawImage(this.ctx.canvas, 0, 0);
+          this._selBgImg = bgSnap;
+          this.selState = 'drawing';
+          this.selRect = { x: pt.x, y: pt.y, w: 0, h: 0 };
+          if (this.selTool === 'lasso') this.selPoints = [pt];
+          return;
+        }
+
+        // ── Drawing mode ──
         this.pushUndo();
         this.isDrawing = true;
         this.activePointerId = e.pointerId;
-        this.rect = this.ctx.canvas.getBoundingClientRect();
         const ctx = this.ctx;
         if (this.erasing) {
           ctx.globalCompositeOperation = 'destination-out';
@@ -2174,7 +2327,7 @@ function getInkEngine(bodyId) {
           ctx.strokeStyle = this.color;
           ctx.lineWidth = this.lineWidth;
         }
-        const startPt = this.coords(e);
+        const startPt = pt;
         this.currentStroke = { lastPt: startPt, lastMidPt: null };
         this._smoothPressure = startPt.pressure || 0.5;
         // Highlight mode: capture canvas snapshot for clean alpha compositing
@@ -2195,7 +2348,64 @@ function getInkEngine(bodyId) {
         if (!this.erasing) { ctx.fillStyle = this.color; ctx.fill(); }
       },
       onPointerMove(e) {
-        if (!this.isDrawing || this.isPalm || e.pointerId !== this.activePointerId) return;
+        if (e.pointerId !== this.activePointerId) return;
+        const pt = this.coords(e);
+
+        // ── Selection move ──
+        if (this.selTool && this.selState === 'drawing') {
+          if (this.selTool === 'box') {
+            this.selRect.w = pt.x - this.selRect.x;
+            this.selRect.h = pt.y - this.selRect.y;
+          } else if (this.selTool === 'lasso') {
+            if (this.selPoints) this.selPoints.push(pt);
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            this.selPoints.forEach(p => {
+              if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+              if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+            });
+            this.selRect = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+          }
+          // Redraw background + selection outline
+          this._selRestoreBg();
+          const ctx = this.ctx; const r = this.selRect;
+          ctx.save(); ctx.strokeStyle = '#2a86ff'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+          if (this.selTool === 'lasso' && this.selPoints && this.selPoints.length > 1) {
+            ctx.beginPath();
+            ctx.moveTo(this.selPoints[0].x, this.selPoints[0].y);
+            this.selPoints.forEach(p => ctx.lineTo(p.x, p.y));
+            ctx.stroke();
+          } else {
+            ctx.strokeRect(r.x, r.y, r.w, r.h);
+          }
+          ctx.setLineDash([]); ctx.restore();
+          return;
+        }
+
+        if (this.selTool && this.selState === 'selected') {
+          if (!this._selDragStart) return;
+          const dx = pt.x - this._selDragStart.x;
+          const dy = pt.y - this._selDragStart.y;
+          const origin = this._selDragOrigin;
+          if (this._selHandle) {
+            // Resize
+            const r = { ...origin };
+            const h = this._selHandle;
+            if (h === 'nw') { r.x = origin.x + dx; r.y = origin.y + dy; r.w = origin.w - dx; r.h = origin.h - dy; }
+            else if (h === 'ne') { r.y = origin.y + dy; r.w = origin.w + dx; r.h = origin.h - dy; }
+            else if (h === 'sw') { r.x = origin.x + dx; r.w = origin.w - dx; r.h = origin.h + dy; }
+            else if (h === 'se') { r.w = origin.w + dx; r.h = origin.h + dy; }
+            if (r.w > 4 && r.h > 4) this.selRect = r;
+          } else {
+            // Move
+            this.selRect = { ...origin, x: origin.x + dx, y: origin.y + dy };
+          }
+          this._selRestoreBg();
+          this._selDrawUI();
+          return;
+        }
+
+        // ── Drawing mode ──
+        if (!this.isDrawing || this.isPalm) return;
         if (e.pointerType === 'touch' && (e.width > 80 || e.height > 80) && e.width > 0 && e.height > 0) {
           this.isPalm = true; this.isDrawing = false; this.currentStroke = null; return;
         }
@@ -2206,16 +2416,48 @@ function getInkEngine(bodyId) {
         const pts = this._ptsBuf; pts.length = 0;
         for (let i = 0; i < n; i++) {
           const ce = hasC ? coalesced[i] : e;
-          const pt = this.coords(ce);
+          const ppt = this.coords(ce);
           const last = pts.length > 0 ? pts[pts.length - 1] : this.currentStroke.lastPt;
-          if (!last) { pts.push(pt); continue; }
-          const dx = pt.x - last.x, dy = pt.y - last.y, d2 = dx*dx + dy*dy;
-          if (d2 >= this.MIN_DIST_SQ && d2 <= this.MAX_DIST_SQ) pts.push(pt);
+          if (!last) { pts.push(ppt); continue; }
+          const ddx = ppt.x - last.x, ddy = ppt.y - last.y, d2 = ddx*ddx + ddy*ddy;
+          if (d2 >= this.MIN_DIST_SQ && d2 <= this.MAX_DIST_SQ) pts.push(ppt);
         }
         if (pts.length > 0) this.flushPts(pts);
       },
       onPointerUp(e) {
         if (e.pointerId !== this.activePointerId) return;
+
+        // ── Selection finalize ──
+        if (this.selTool) {
+          if (this.selState === 'drawing') {
+            // Normalize negative dimensions
+            const r = this.selRect;
+            if (r.w < 0) { r.x += r.w; r.w = -r.w; }
+            if (r.h < 0) { r.y += r.h; r.h = -r.h; }
+            if (r.w < 4 || r.h < 4) {
+              // Too small — cancel selection
+              this._selRestoreBg();
+              this.selState = null; this.selRect = null; this.selPoints = null;
+              this._selBgImg = null;
+            } else {
+              this._selExtract();
+              this._selRestoreBg();
+              this._selDrawUI();
+              this.selState = 'selected';
+            }
+          } else if (this.selState === 'selected') {
+            this._selDragStart = null;
+            this._selDragOrigin = null;
+            this._selHandle = null;
+            // Redraw to update UI after move/resize
+            this._selRestoreBg();
+            this._selDrawUI();
+          }
+          this.activePointerId = null;
+          return;
+        }
+
+        // ── Drawing mode ──
         this.isDrawing = false; this.isPalm = false; this.activePointerId = null; this.currentStroke = null;
         if (this.ctx) {
           this.ctx.globalCompositeOperation = 'source-over';
@@ -2278,6 +2520,37 @@ function markCloudDirty() {
   syncState.saveTimer = setTimeout(saveToCloud, 900);
 }
 
+// Save/load ink images to a separate Firestore sub-collection (avoids hitting the 1MB document limit).
+async function saveInkDoc(inkDocId, dataUrl, height) {
+  if (!syncState.user || !syncState.db) return;
+  try {
+    await syncState.db.collection('users').doc(syncState.user.uid)
+      .collection('ink').doc(inkDocId).set({ data: dataUrl, height, ts: Date.now() });
+  } catch(e) {
+    console.warn('saveInkDoc failed', inkDocId, e);
+  }
+}
+
+async function deleteInkDoc(inkDocId) {
+  if (!syncState.user || !syncState.db) return;
+  try {
+    await syncState.db.collection('users').doc(syncState.user.uid)
+      .collection('ink').doc(inkDocId).delete();
+  } catch(e) { /* ignore */ }
+}
+
+async function loadInkDoc(inkDocId) {
+  if (!syncState.user || !syncState.db) return null;
+  try {
+    const doc = await syncState.db.collection('users').doc(syncState.user.uid)
+      .collection('ink').doc(inkDocId).get();
+    return doc.exists ? doc.data() : null;
+  } catch(e) {
+    console.warn('loadInkDoc failed', inkDocId, e);
+    return null;
+  }
+}
+
 function _lightNotesForCourse(notes) {
   return (notes || []).map(n => {
     const { parsedBlocks, _editing, ...rest } = n;
@@ -2293,16 +2566,39 @@ function _lightNotesForCourse(notes) {
   });
 }
 
+function _lightSectionsForCloud(sections) {
+  // Strip inkNotes data URLs (large PNGs) from blocks — saved separately in the ink sub-collection.
+  return (sections || []).map(sec => ({
+    ...sec,
+    blocks: (sec.blocks || []).map(b => {
+      const { inkNotes, ...rest } = b;
+      return rest;
+    }),
+  }));
+}
+
+function _lightProblemSetsForCloud(problemSets) {
+  // Strip inkWork data URLs from problems — saved separately in the ink sub-collection.
+  return (problemSets || []).map(ps => ({
+    ...ps,
+    problems: (ps.problems || []).map(p => {
+      const { inkWork, ...rest } = p;
+      return rest;
+    }),
+  }));
+}
+
 function snapshotForCloud() {
   // Per-course data (problemSets, lectureNotes) lives on each course object.
-  // Strip parsedBlocks (re-derivable) to stay under Firestore 1MB limit.
+  // Strip parsedBlocks (re-derivable) and ink image data (saved in ink sub-collection)
+  // to stay under Firestore 1MB document limit.
   const coursesSnapshot = state.courses.map(course => {
     _ensureCourseData(course);
     const { sections, problemSets, activePsId, lectureNotes, activeNoteId, ...meta } = course;
     return {
       ...meta,
-      sections,
-      problemSets,
+      sections: _lightSectionsForCloud(sections),
+      problemSets: _lightProblemSetsForCloud(problemSets),
       activePsId,
       lectureNotes: _lightNotesForCourse(lectureNotes),
       activeNoteId,
@@ -4335,6 +4631,8 @@ function renderBlocks(blocks, sectionIdx) {
                 <button class="ink-tool-btn active" id="ink-pen-${bodyId}" onclick="inkSetTool('${bodyId}','pen')">✏ Pen</button>
                 <button class="ink-tool-btn" id="ink-erase-${bodyId}" onclick="inkSetTool('${bodyId}','eraser')">◻ Eraser</button>
                 <button class="ink-tool-btn" id="ink-highlight-${bodyId}" onclick="inkSetTool('${bodyId}','highlight')" title="Highlighter — semi-transparent marker">▬ Highlight</button>
+                <button class="ink-tool-btn" id="ink-selbox-${bodyId}" onclick="inkSetTool('${bodyId}','selectBox')" title="Box selection — drag to select, then move or resize">⬚ Select</button>
+                <button class="ink-tool-btn" id="ink-sellasso-${bodyId}" onclick="inkSetTool('${bodyId}','selectLasso')" title="Lasso selection — draw around content to select it">⌾ Lasso</button>
                 <button class="ink-tool-btn" id="ink-pressure-${bodyId}" onclick="inkTogglePressure('${bodyId}')" title="Toggle pressure sensitivity (Apple Pencil / stylus)">⌁ Pressure</button>
                 <div class="ink-size-group" title="Stroke thickness">
                   <input type="range" min="1" max="20" step="0.5" value="2" class="ink-thickness-slider" id="ink-thick-${bodyId}" oninput="inkSetThickness('${bodyId}',this.value)">
@@ -5200,6 +5498,8 @@ function _renderProblemWorkArea(p) {
       <div class="ink-toolbar" id="ink-tb-${inkId}">
         <button class="ink-tool-btn active" id="ink-pen-${inkId}" onclick="inkSetTool('${inkId}','pen')">✏ Pen</button>
         <button class="ink-tool-btn" id="ink-erase-${inkId}" onclick="inkSetTool('${inkId}','eraser')">◻ Eraser</button>
+        <button class="ink-tool-btn" id="ink-selbox-${inkId}" onclick="inkSetTool('${inkId}','selectBox')" title="Box selection — drag to select, then move or resize">⬚ Select</button>
+        <button class="ink-tool-btn" id="ink-sellasso-${inkId}" onclick="inkSetTool('${inkId}','selectLasso')" title="Lasso selection — draw around content to select it">⌾ Lasso</button>
         <button class="ink-tool-btn" id="ink-pressure-${inkId}" onclick="inkTogglePressure('${inkId}')" title="Toggle pressure sensitivity (Apple Pencil / stylus)">⌁ Pressure</button>
         <div class="ink-size-group" title="Stroke thickness">
           <input type="range" min="1" max="20" step="0.5" value="2" class="ink-thickness-slider" id="ink-thick-${inkId}" oninput="inkSetThickness('${inkId}',this.value)">
@@ -5215,7 +5515,7 @@ function _renderProblemWorkArea(p) {
         <span style="flex:1;"></span>
         <button class="ink-tool-btn" onclick="inkSaveDefaults('${inkId}')" id="ink-savedef-${inkId}" title="Save current thickness, color & pressure as defaults for new canvases">⚙ Defaults</button>
         <button class="ink-tool-btn" onclick="inkPworkUndo('${inkId}')">↩ Undo</button>
-        <button class="ink-tool-btn danger" onclick="inkPworkClear('${inkId}',${p.id})">Clear</button>
+        <button class="ink-tool-btn danger" id="ink-clear-${inkId}" onclick="inkPworkClearConfirm('${inkId}',${p.id})">Clear</button>
         <div style="display:flex;align-items:center;gap:3px;">
           <button class="ink-tool-btn" onclick="inkNavPage('${inkId}',-1)" title="Previous page (scroll up)" style="padding:4px 7px;">▲</button>
           <span class="ink-page-indicator" id="ink-page-${inkId}">1 pg</span>
@@ -7401,13 +7701,21 @@ function initInkCanvasPwork(inkId, problemId) {
       inkUpdatePageIndicator(inkId);
       inkUpdateScrollbar(inkId);
     }, { passive: true });
-    // Restore saved ink
-    if (p?.inkWork) {
-      eng._hasAnyContent = true;
-      const img = new Image();
-      img.onload = () => { ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(img, 0, 0, canvas.width/dpr, canvas.height/dpr); };
-      img.src = p.inkWork;
-    }
+    // Restore saved ink (local first, then Firestore ink sub-collection)
+    (async () => {
+      let inkSrc = p?.inkWork;
+      if (!inkSrc) {
+        const inkData = await loadInkDoc(inkId);
+        if (inkData?.data) {
+          inkSrc = inkData.data;
+          if (p) { p.inkWork = inkSrc; p.inkWorkHeight = inkData.height || p.inkWorkHeight; }
+        }
+      }
+      if (inkSrc) {
+        eng._hasAnyContent = true;
+        _applyInkImageToCanvas(eng, inkSrc);
+      }
+    })();
     // Init custom scrollbar
     initInkScrollbar(inkId);
     inkUpdateScrollbar(inkId);
@@ -7416,7 +7724,7 @@ function initInkCanvasPwork(inkId, problemId) {
     const pm = (e) => eng.onPointerMove(e);
     const pu = (e) => { eng.onPointerUp(e); if (!eng.isDrawing) scheduleInkSavePwork(inkId, problemId); };
     const pc = (e) => eng.onPointerCancel(e);
-    const noScroll = (e) => { if (eng.isDrawing) e.preventDefault(); };
+    const noScroll = (e) => { if (eng.isDrawing || eng.selState === 'drawing') e.preventDefault(); };
     canvas.addEventListener('pointerdown',   pd);
     canvas.addEventListener('pointermove',   pm);
     canvas.addEventListener('pointerup',     pu);
@@ -7445,9 +7753,13 @@ function inkSavePwork(inkId, problemId) {
   if (!p) return;
   if (!eng._hasAnyContent) {
     p.inkWork = null; p.inkWorkHeight = null;
+    deleteInkDoc(inkId);
   } else {
-    p.inkWork = canvas.toDataURL('image/png');
+    const dataUrl = canvas.toDataURL('image/png');
+    p.inkWork = dataUrl;
     p.inkWorkHeight = eng.canvasHeight || 300;
+    // Save image to separate Firestore doc (keeps main state doc under 1MB limit)
+    saveInkDoc(inkId, dataUrl, eng.canvasHeight || 300);
   }
   markCloudDirty();
 }
@@ -7457,10 +7769,38 @@ function inkPworkUndo(inkId) {
   if (!eng || !eng.ctx || !eng.undoStack.length) return;
   const prev = eng.undoStack.pop();
   const ctx = eng.ctx;
-  const dpr = window.devicePixelRatio || 1;
-  const cssW = ctx.canvas.width / dpr, cssH = ctx.canvas.height / dpr;
-  ctx.clearRect(0, 0, cssW, cssH);
-  ctx.drawImage(prev, 0, 0, cssW, cssH);
+  const canvas = ctx.canvas;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(prev, 0, 0, canvas.width, canvas.height);
+  ctx.restore();
+  eng._hasAnyContent = true;
+  const problemId = parseInt(inkId.replace('pwork-', ''));
+  if (!isNaN(problemId)) scheduleInkSavePwork(inkId, problemId);
+}
+
+const _inkPworkClearTimers = {};
+function inkPworkClearConfirm(inkId, problemId) {
+  const btn = document.getElementById('ink-clear-' + inkId);
+  if (!btn) { inkPworkClear(inkId, problemId); return; }
+  if (btn.dataset.confirming === '1') {
+    clearTimeout(_inkPworkClearTimers[inkId]);
+    delete _inkPworkClearTimers[inkId];
+    btn.dataset.confirming = '';
+    btn.textContent = 'Clear';
+    btn.style.outline = '';
+    inkPworkClear(inkId, problemId);
+  } else {
+    btn.dataset.confirming = '1';
+    btn.textContent = 'Sure?';
+    btn.style.outline = '2px solid var(--red, #a03838)';
+    _inkPworkClearTimers[inkId] = setTimeout(() => {
+      btn.dataset.confirming = '';
+      btn.textContent = 'Clear';
+      btn.style.outline = '';
+    }, 3000);
+  }
 }
 
 function inkPworkClear(inkId, problemId) {
@@ -7526,7 +7866,7 @@ function initInkCanvas(bodyId) {
     const pm = (e) => eng.onPointerMove(e);
     const pu = (e) => { eng.onPointerUp(e); scheduleInkSave(bodyId); };
     const pc = (e) => eng.onPointerCancel(e);
-    const noScroll = (e) => { if (eng.isDrawing) e.preventDefault(); };
+    const noScroll = (e) => { if (eng.isDrawing || eng.selState === 'drawing') e.preventDefault(); };
     on('pointerdown',   pd);
     on('pointermove',   pm);
     on('pointerup',     pu);
@@ -7541,7 +7881,23 @@ function initInkCanvas(bodyId) {
   if (wrap) wrap.classList.toggle('eraser-mode', eng.erasing);
 }
 
-function inkRestoreFromState(bodyId) {
+function _applyInkImageToCanvas(eng, src) {
+  const img = new Image();
+  img.onload = () => {
+    const dpr = window.devicePixelRatio || 1;
+    const ctx = eng.ctx;
+    const canvas = ctx.canvas;
+    // Bypass DPR scale so the image fills the full physical canvas without blurring.
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    ctx.restore();
+  };
+  img.src = src;
+}
+
+async function inkRestoreFromState(bodyId) {
   // Extract sectionIdx and bi from bodyId pattern: "block-SI-BI"
   const parts = bodyId.split('-');
   if (parts.length < 3) return;
@@ -7549,16 +7905,24 @@ function inkRestoreFromState(bodyId) {
   const bi = parseInt(parts[2]);
   const course = state.courses.find(c => c.id === state.activeCourse);
   const block = course?.sections?.[si]?.blocks?.[bi];
-  if (!block || !block.inkNotes) return;
+  if (!block) return;
   const eng = getInkEngine(bodyId);
   if (!eng.ctx) return;
+
+  // Use locally-cached data URL first; fall back to Firestore ink sub-collection.
+  let inkSrc = block.inkNotes;
+  if (!inkSrc) {
+    const inkDocId = (state.activeCourse || 'default') + '_' + bodyId;
+    const inkData = await loadInkDoc(inkDocId);
+    if (inkData?.data) {
+      inkSrc = inkData.data;
+      block.inkNotes = inkSrc;
+      block.inkNotesHeight = inkData.height || block.inkNotesHeight;
+    }
+  }
+  if (!inkSrc) return;
   eng._hasAnyContent = true;
-  const img = new Image();
-  img.onload = () => {
-    eng.ctx.clearRect(0, 0, eng.ctx.canvas.width, eng.ctx.canvas.height);
-    eng.ctx.drawImage(img, 0, 0, eng.ctx.canvas.width / (window.devicePixelRatio||1), eng.ctx.canvas.height / (window.devicePixelRatio||1));
-  };
-  img.src = block.inkNotes;
+  _applyInkImageToCanvas(eng, inkSrc);
 }
 
 function inkSave(bodyId, si, bi) {
@@ -7567,13 +7931,18 @@ function inkSave(bodyId, si, bi) {
   const canvas = eng.ctx.canvas;
   const course = state.courses.find(c => c.id === state.activeCourse);
   if (!course?.sections?.[si]?.blocks?.[bi]) return;
+  const inkDocId = (state.activeCourse || 'default') + '_' + bodyId;
   // Use _hasAnyContent flag instead of getImageData (avoids full GPU→CPU pixel readback)
   if (!eng._hasAnyContent) {
     course.sections[si].blocks[bi].inkNotes = null;
     course.sections[si].blocks[bi].inkNotesHeight = null;
+    deleteInkDoc(inkDocId);
   } else {
-    course.sections[si].blocks[bi].inkNotes = canvas.toDataURL('image/png');
+    const dataUrl = canvas.toDataURL('image/png');
+    course.sections[si].blocks[bi].inkNotes = dataUrl;
     course.sections[si].blocks[bi].inkNotesHeight = eng.canvasHeight || 300;
+    // Save image to separate Firestore doc (keeps main state doc under 1MB limit)
+    saveInkDoc(inkDocId, dataUrl, eng.canvasHeight || 300);
   }
   markCloudDirty();
 }
@@ -7588,15 +7957,44 @@ function inkTogglePressure(bodyId) {
 function inkSetTool(bodyId, tool) {
   const eng = getInkEngine(bodyId);
   const wrap = document.getElementById('ink-cw-' + bodyId);
-  const penBtn       = document.getElementById('ink-pen-'       + bodyId);
-  const eraseBtn     = document.getElementById('ink-erase-'     + bodyId);
-  const highlightBtn = document.getElementById('ink-highlight-' + bodyId);
+  // Commit any active selection when switching tools
+  if (eng.selState === 'selected' && tool !== 'selectBox' && tool !== 'selectLasso') {
+    eng._selCommit();
+    // Schedule a save now that selection has been committed
+    const _parts = bodyId.split('-');
+    if (_parts.length >= 3) scheduleInkSave(bodyId);
+    else {
+      const _pid = parseInt(bodyId.replace('pwork-', ''));
+      if (!isNaN(_pid)) scheduleInkSavePwork(bodyId, _pid);
+    }
+  }
+  const penBtn       = document.getElementById('ink-pen-'        + bodyId);
+  const eraseBtn     = document.getElementById('ink-erase-'      + bodyId);
+  const highlightBtn = document.getElementById('ink-highlight-'  + bodyId);
+  const selBoxBtn    = document.getElementById('ink-selbox-'     + bodyId);
+  const selLassoBtn  = document.getElementById('ink-sellasso-'   + bodyId);
   eng.erasing       = (tool === 'eraser');
   eng.highlightMode = (tool === 'highlight');
+  eng.selTool       = (tool === 'selectBox') ? 'box' : (tool === 'selectLasso') ? 'lasso' : null;
   if (wrap) wrap.classList.toggle('eraser-mode', eng.erasing);
+  if (wrap) wrap.classList.toggle('selection-mode', !!eng.selTool);
   if (penBtn)       penBtn.classList.toggle('active',       tool === 'pen');
   if (eraseBtn)     eraseBtn.classList.toggle('active',     tool === 'eraser');
   if (highlightBtn) highlightBtn.classList.toggle('active', tool === 'highlight');
+  if (selBoxBtn)    selBoxBtn.classList.toggle('active',    tool === 'selectBox');
+  if (selLassoBtn)  selLassoBtn.classList.toggle('active',  tool === 'selectLasso');
+}
+
+function inkCommitSelection(bodyId) {
+  const eng = inkEngines[bodyId];
+  if (!eng) return;
+  eng._selCommit();
+  const parts = bodyId.split('-');
+  if (parts.length >= 3) scheduleInkSave(bodyId);
+  else {
+    const problemId = parseInt(bodyId.replace('pwork-', ''));
+    if (!isNaN(problemId)) scheduleInkSavePwork(bodyId, problemId);
+  }
 }
 
 function inkSetSize(bodyId, sizeIdx, el) {
@@ -7666,10 +8064,14 @@ function inkUndo(bodyId) {
   if (!eng || !eng.ctx || !eng.undoStack.length) return;
   const prev = eng.undoStack.pop();
   const ctx = eng.ctx;
-  const dpr = window.devicePixelRatio || 1;
-  const cssW = ctx.canvas.width / dpr, cssH = ctx.canvas.height / dpr;
-  ctx.clearRect(0, 0, cssW, cssH);
-  ctx.drawImage(prev, 0, 0, cssW, cssH);
+  const canvas = ctx.canvas;
+  // Bypass DPR scale transform so snapshot (stored at physical resolution) maps 1:1 to physical pixels.
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(prev, 0, 0, canvas.width, canvas.height);
+  ctx.restore();
+  eng._hasAnyContent = true;
   const parts = bodyId.split('-');
   if (parts.length >= 3) inkSave(bodyId, parseInt(parts[1]), parseInt(parts[2]));
 }
@@ -8063,6 +8465,11 @@ document.addEventListener('keydown', e => {
   if(e.key==='Escape') {
     document.querySelectorAll('.modal-overlay.open').forEach(m=>m.classList.remove('open'));
     closeDefPopup();
+    // Commit any active canvas selection
+    Object.keys(inkEngines).forEach(id => {
+      const eng = inkEngines[id];
+      if (eng.selState === 'selected') inkCommitSelection(id);
+    });
   }
 });
 
