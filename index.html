@@ -1185,18 +1185,55 @@
     color: var(--text3); min-width: 26px; text-align: center;
     letter-spacing: 0.04em; flex-shrink: 0;
   }
+  .ink-canvas-outer {
+    position: relative;
+  }
   .ink-canvas-wrap {
     position: relative;
     border: 1px solid var(--border);
     border-radius: 6px;
     overflow-x: hidden;
     overflow-y: auto;
-    max-height: 300px;
+    max-height: 900px;
     background: var(--bg);
     cursor: crosshair;
     touch-action: none;
+    scrollbar-width: none;
   }
+  .ink-canvas-wrap::-webkit-scrollbar { display: none; }
   .ink-canvas-wrap.eraser-mode { cursor: cell; }
+  /* Custom scrollbar overlay – always visible on all devices */
+  .ink-custom-scrollbar {
+    position: absolute;
+    right: 3px;
+    top: 4px;
+    bottom: 4px;
+    width: 7px;
+    z-index: 15;
+    border-radius: 4px;
+    background: rgba(128,128,128,0.12);
+    display: none;
+    pointer-events: none;
+  }
+  .ink-custom-scrollbar.visible {
+    display: block;
+    pointer-events: auto;
+  }
+  .ink-scrollbar-thumb {
+    position: absolute;
+    width: 7px;
+    left: 0;
+    background: rgba(128,128,128,0.45);
+    border-radius: 4px;
+    min-height: 28px;
+    cursor: grab;
+    transition: background 0.15s;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .ink-scrollbar-thumb:hover { background: rgba(128,128,128,0.7); }
+  .ink-scrollbar-thumb.dragging { background: rgba(128,128,128,0.85); cursor: grabbing; }
   .ink-canvas-wrap canvas {
     display: block;
     width: 100%;
@@ -4316,15 +4353,20 @@ function renderBlocks(blocks, sectionIdx) {
                 <button class="ink-tool-btn" onclick="inkUndo('${bodyId}')">↩ Undo</button>
                 <button class="ink-tool-btn danger" id="ink-clear-${bodyId}" onclick="inkClearConfirm('${bodyId}',${sectionIdx},${bi})">Clear</button>
                 <div style="display:flex;align-items:center;gap:3px;">
-                  <button class="ink-tool-btn" onclick="inkNavPage('${bodyId}',-1)" title="Previous page" style="padding:4px 7px;">◀</button>
-                  <span class="ink-page-indicator" id="ink-page-${bodyId}">1/1</span>
-                  <button class="ink-tool-btn" onclick="inkNavPage('${bodyId}',1)" title="Next page" style="padding:4px 7px;">▶</button>
+                  <button class="ink-tool-btn" onclick="inkNavPage('${bodyId}',-1)" title="Previous page (scroll up)" style="padding:4px 7px;">▲</button>
+                  <span class="ink-page-indicator" id="ink-page-${bodyId}">1 pg</span>
+                  <button class="ink-tool-btn" onclick="inkNavPage('${bodyId}',1)" title="Next page (scroll down)" style="padding:4px 7px;">▼</button>
                 </div>
                 <button class="ink-tool-btn" onclick="inkAddCanvas('${bodyId}')" title="Add page" style="padding:4px 7px;">＋pg</button>
                 <button class="ink-tool-btn danger" onclick="inkRemoveCanvas('${bodyId}')" title="Remove last page" style="padding:4px 7px;">－pg</button>
               </div>
-              <div class="ink-canvas-wrap" id="ink-cw-${bodyId}">
-                <canvas id="ink-cv-${bodyId}" height="300"></canvas>
+              <div class="ink-canvas-outer" id="ink-outer-${bodyId}">
+                <div class="ink-canvas-wrap" id="ink-cw-${bodyId}">
+                  <canvas id="ink-cv-${bodyId}" height="300"></canvas>
+                </div>
+                <div class="ink-custom-scrollbar" id="ink-sb-${bodyId}">
+                  <div class="ink-scrollbar-thumb" id="ink-sb-thumb-${bodyId}"></div>
+                </div>
               </div>
               ${b.inkNotes ? `<div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text3);text-align:right;margin-top:2px;">Ink saved ✓</div>` : ''}
             </div>
@@ -5175,15 +5217,20 @@ function _renderProblemWorkArea(p) {
         <button class="ink-tool-btn" onclick="inkPworkUndo('${inkId}')">↩ Undo</button>
         <button class="ink-tool-btn danger" onclick="inkPworkClear('${inkId}',${p.id})">Clear</button>
         <div style="display:flex;align-items:center;gap:3px;">
-          <button class="ink-tool-btn" onclick="inkNavPage('${inkId}',-1)" title="Previous page" style="padding:4px 7px;">◀</button>
-          <span class="ink-page-indicator" id="ink-page-${inkId}">1/1</span>
-          <button class="ink-tool-btn" onclick="inkNavPage('${inkId}',1)" title="Next page" style="padding:4px 7px;">▶</button>
+          <button class="ink-tool-btn" onclick="inkNavPage('${inkId}',-1)" title="Previous page (scroll up)" style="padding:4px 7px;">▲</button>
+          <span class="ink-page-indicator" id="ink-page-${inkId}">1 pg</span>
+          <button class="ink-tool-btn" onclick="inkNavPage('${inkId}',1)" title="Next page (scroll down)" style="padding:4px 7px;">▼</button>
         </div>
         <button class="ink-tool-btn" onclick="inkPworkAddCanvas('${inkId}',${p.id})" title="Add page" style="padding:4px 7px;">＋pg</button>
         <button class="ink-tool-btn danger" onclick="inkPworkRemoveCanvas('${inkId}',${p.id})" title="Remove last page" style="padding:4px 7px;">－pg</button>
       </div>
-      <div class="ink-canvas-wrap" id="ink-cw-${inkId}">
-        <canvas id="ink-cv-${inkId}" height="300"></canvas>
+      <div class="ink-canvas-outer" id="ink-outer-${inkId}">
+        <div class="ink-canvas-wrap" id="ink-cw-${inkId}">
+          <canvas id="ink-cv-${inkId}" height="300"></canvas>
+        </div>
+        <div class="ink-custom-scrollbar" id="ink-sb-${inkId}">
+          <div class="ink-scrollbar-thumb" id="ink-sb-thumb-${inkId}"></div>
+        </div>
       </div>
       ${p.inkWork ? `<div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text3);text-align:right;margin-top:2px;">Ink saved ✓</div>` : ''}
     </div>
@@ -7348,7 +7395,12 @@ function initInkCanvasPwork(inkId, problemId) {
     inkSyncToolbar(inkId);
     inkUpdatePageIndicator(inkId);
     const _pWrap = document.getElementById('ink-cw-' + inkId);
-    if (_pWrap) _pWrap.addEventListener('scroll', () => inkUpdatePageIndicator(inkId), { passive: true });
+    // Set initial viewport height (up to 3 panels = 900px)
+    if (_pWrap) _pWrap.style.maxHeight = Math.min(_savedH, INK_PAGE_SIZE) + 'px';
+    if (_pWrap) _pWrap.addEventListener('scroll', () => {
+      inkUpdatePageIndicator(inkId);
+      inkUpdateScrollbar(inkId);
+    }, { passive: true });
     // Restore saved ink
     if (p?.inkWork) {
       eng._hasAnyContent = true;
@@ -7356,6 +7408,9 @@ function initInkCanvasPwork(inkId, problemId) {
       img.onload = () => { ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(img, 0, 0, canvas.width/dpr, canvas.height/dpr); };
       img.src = p.inkWork;
     }
+    // Init custom scrollbar
+    initInkScrollbar(inkId);
+    inkUpdateScrollbar(inkId);
     // Attach pointer listeners
     const pd = (e) => eng.onPointerDown(e);
     const pm = (e) => eng.onPointerMove(e);
@@ -7452,9 +7507,17 @@ function initInkCanvas(bodyId) {
     inkSyncToolbar(bodyId);
     inkUpdatePageIndicator(bodyId);
     const _bWrap = document.getElementById('ink-cw-' + bodyId);
-    if (_bWrap) _bWrap.addEventListener('scroll', () => inkUpdatePageIndicator(bodyId), { passive: true });
+    // Set initial viewport height (up to 3 panels = 900px)
+    if (_bWrap) _bWrap.style.maxHeight = Math.min(_savedH, INK_PAGE_SIZE) + 'px';
+    if (_bWrap) _bWrap.addEventListener('scroll', () => {
+      inkUpdatePageIndicator(bodyId);
+      inkUpdateScrollbar(bodyId);
+    }, { passive: true });
     // Restore saved ink if any
     inkRestoreFromState(bodyId);
+    // Init custom scrollbar (runs after restore so height is known)
+    initInkScrollbar(bodyId);
+    inkUpdateScrollbar(bodyId);
     // Attach pointer listeners
     const on  = (ev, fn) => canvas.addEventListener(ev, fn);
     const don = (ev, fn) => document.addEventListener(ev, fn);
@@ -7615,11 +7678,11 @@ function inkNavPage(bodyId, delta) {
   const eng = getInkEngine(bodyId);
   const wrap = document.getElementById('ink-cw-' + bodyId);
   if (!wrap || !eng) return;
-  const totalPages = Math.max(1, Math.round(eng.canvasHeight / INK_CANVAS_STEP));
-  const currentPage = Math.round(wrap.scrollTop / INK_CANVAS_STEP);
+  const totalPages = Math.max(1, Math.ceil(eng.canvasHeight / INK_PAGE_SIZE));
+  const currentPage = Math.round(wrap.scrollTop / INK_PAGE_SIZE);
   const newPage = Math.max(0, Math.min(totalPages - 1, currentPage + delta));
-  wrap.scrollTo({ top: newPage * INK_CANVAS_STEP, behavior: 'smooth' });
-  setTimeout(() => inkUpdatePageIndicator(bodyId), 350);
+  wrap.scrollTo({ top: newPage * INK_PAGE_SIZE, behavior: 'smooth' });
+  setTimeout(() => { inkUpdatePageIndicator(bodyId); inkUpdateScrollbar(bodyId); }, 350);
 }
 
 function inkUpdatePageIndicator(bodyId) {
@@ -7627,9 +7690,84 @@ function inkUpdatePageIndicator(bodyId) {
   const wrap = document.getElementById('ink-cw-' + bodyId);
   const el = document.getElementById('ink-page-' + bodyId);
   if (!wrap || !el || !eng) return;
-  const totalPages = Math.max(1, Math.round(eng.canvasHeight / INK_CANVAS_STEP));
-  const currentPage = Math.min(totalPages, Math.round(wrap.scrollTop / INK_CANVAS_STEP) + 1);
-  el.textContent = currentPage + '/' + totalPages;
+  // A "page" = 3 canvas panels (INK_PAGE_SIZE = 900px). Show "pg X/Y".
+  const totalPages = Math.max(1, Math.ceil(eng.canvasHeight / INK_PAGE_SIZE));
+  const currentPage = Math.min(totalPages, Math.floor(wrap.scrollTop / INK_PAGE_SIZE) + 1);
+  el.textContent = totalPages > 1 ? 'pg ' + currentPage + '/' + totalPages : '1 pg';
+}
+
+// ── CUSTOM SCROLLBAR ──
+// Shows an always-visible overlay scrollbar on the right of the canvas,
+// especially useful on iPad/mobile where native scrollbars are hidden.
+
+function inkUpdateScrollbar(bodyId) {
+  const wrap  = document.getElementById('ink-cw-' + bodyId);
+  const track = document.getElementById('ink-sb-' + bodyId);
+  const thumb = document.getElementById('ink-sb-thumb-' + bodyId);
+  if (!wrap || !track || !thumb) return;
+  const eng = inkEngines[bodyId];
+  const canvasH = (eng && eng.canvasHeight) || INK_CANVAS_STEP;
+  const viewH   = Math.min(canvasH, INK_PAGE_SIZE);
+  const hasOverflow = canvasH > INK_PAGE_SIZE + 1; // +1 avoids float rounding false positives
+  track.classList.toggle('visible', hasOverflow);
+  if (!hasOverflow) return;
+  const trackH  = track.offsetHeight || (viewH - 8);
+  const ratio   = viewH / canvasH;
+  const thumbH  = Math.max(28, ratio * trackH);
+  const scrollMax = canvasH - viewH;
+  const thumbTop  = scrollMax > 0 ? (wrap.scrollTop / scrollMax) * (trackH - thumbH) : 0;
+  thumb.style.height = thumbH + 'px';
+  thumb.style.top    = thumbTop + 'px';
+}
+
+function initInkScrollbar(bodyId) {
+  const track = document.getElementById('ink-sb-' + bodyId);
+  const thumb = document.getElementById('ink-sb-thumb-' + bodyId);
+  const wrap  = document.getElementById('ink-cw-' + bodyId);
+  if (!track || !thumb || !wrap) return;
+  // Keep scrollbar in sync with native scroll
+  wrap.addEventListener('scroll', () => inkUpdateScrollbar(bodyId), { passive: true });
+  // Drag-to-scroll logic (works with mouse, touch, and Apple Pencil on the thumb)
+  let dragStartY = 0, dragStartScroll = 0;
+  const onDragMove = (e) => {
+    const eng = inkEngines[bodyId];
+    const canvasH = (eng && eng.canvasHeight) || INK_CANVAS_STEP;
+    const viewH   = Math.min(canvasH, INK_PAGE_SIZE);
+    const trackH  = track.offsetHeight || (viewH - 8);
+    const thumbH  = thumb.offsetHeight;
+    const dy = (e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : dragStartY)) - dragStartY;
+    const scrollMax  = canvasH - viewH;
+    const thumbRange = trackH - thumbH;
+    if (thumbRange > 0) {
+      wrap.scrollTop = Math.max(0, Math.min(scrollMax, dragStartScroll + (dy / thumbRange) * scrollMax));
+      inkUpdateScrollbar(bodyId);
+    }
+  };
+  const onDragEnd = () => {
+    thumb.classList.remove('dragging');
+    document.removeEventListener('pointermove', onDragMove);
+    document.removeEventListener('pointerup',   onDragEnd);
+  };
+  thumb.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragStartY      = e.clientY;
+    dragStartScroll = wrap.scrollTop;
+    thumb.classList.add('dragging');
+    document.addEventListener('pointermove', onDragMove);
+    document.addEventListener('pointerup',   onDragEnd);
+  });
+  // Click on track (not thumb) jumps to that position
+  track.addEventListener('pointerdown', (e) => {
+    if (e.target === thumb) return;
+    const eng = inkEngines[bodyId];
+    const canvasH = (eng && eng.canvasHeight) || INK_CANVAS_STEP;
+    const viewH   = Math.min(canvasH, INK_PAGE_SIZE);
+    const rect = track.getBoundingClientRect();
+    const clickRatio = (e.clientY - rect.top) / rect.height;
+    wrap.scrollTo({ top: clickRatio * (canvasH - viewH), behavior: 'smooth' });
+    setTimeout(() => inkUpdateScrollbar(bodyId), 300);
+  });
 }
 
 function inkSyncToolbar(bodyId) {
@@ -7714,7 +7852,8 @@ function inkClearConfirm(bodyId, si, bi) {
 }
 
 // ── INK CANVAS RESIZE (add/delete portions) ──
-const INK_CANVAS_STEP = 300; // px per added portion
+const INK_CANVAS_STEP = 300; // px per added portion (one canvas panel)
+const INK_PAGE_SIZE = INK_CANVAS_STEP * 3; // 900px – 3 panels visible at once = one "full page"
 
 function inkResizeCanvas(bodyId, newHeightCss) {
   const eng = inkEngines[bodyId];
@@ -7738,10 +7877,11 @@ function inkResizeCanvas(bodyId, newHeightCss) {
   const img = new Image();
   img.onload = () => ctx.drawImage(img, 0, 0, canvas.width / dpr, prevCssH);
   img.src = snapshot;
-  // Update the canvas-wrap max-height to keep the viewport window size
-  // (the wrap scrolls; we keep max-height at INK_CANVAS_STEP)
+  // Viewport shows up to 3 panels (INK_PAGE_SIZE = 900px) at once.
+  // If canvas is smaller, shrink wrap to match so there's no dead space.
   const wrap = document.getElementById('ink-cw-' + bodyId);
-  if (wrap) wrap.style.maxHeight = INK_CANVAS_STEP + 'px';
+  if (wrap) wrap.style.maxHeight = Math.min(newHeightCss, INK_PAGE_SIZE) + 'px';
+  setTimeout(() => inkUpdateScrollbar(bodyId), 50);
 }
 
 function inkAddCanvas(bodyId) {
@@ -7749,7 +7889,11 @@ function inkAddCanvas(bodyId) {
   if (!eng || !eng.ctx) return;
   inkResizeCanvas(bodyId, (eng.canvasHeight || INK_CANVAS_STEP) + INK_CANVAS_STEP);
   const wrap = document.getElementById('ink-cw-' + bodyId);
-  if (wrap) setTimeout(() => { wrap.scrollTo({ top: wrap.scrollHeight, behavior: 'smooth' }); inkUpdatePageIndicator(bodyId); }, 100);
+  if (wrap) setTimeout(() => {
+    wrap.scrollTo({ top: wrap.scrollHeight, behavior: 'smooth' });
+    inkUpdatePageIndicator(bodyId);
+    inkUpdateScrollbar(bodyId);
+  }, 120);
   scheduleInkSave(bodyId);
 }
 
@@ -7759,7 +7903,7 @@ function inkRemoveCanvas(bodyId) {
   const currentH = eng.canvasHeight || INK_CANVAS_STEP;
   if (currentH <= INK_CANVAS_STEP) return;
   inkResizeCanvas(bodyId, currentH - INK_CANVAS_STEP);
-  setTimeout(() => inkUpdatePageIndicator(bodyId), 100);
+  setTimeout(() => { inkUpdatePageIndicator(bodyId); inkUpdateScrollbar(bodyId); }, 120);
   scheduleInkSave(bodyId);
 }
 
@@ -7768,7 +7912,11 @@ function inkPworkAddCanvas(inkId, problemId) {
   if (!eng || !eng.ctx) return;
   inkResizeCanvas(inkId, (eng.canvasHeight || INK_CANVAS_STEP) + INK_CANVAS_STEP);
   const wrap = document.getElementById('ink-cw-' + inkId);
-  if (wrap) setTimeout(() => { wrap.scrollTo({ top: wrap.scrollHeight, behavior: 'smooth' }); inkUpdatePageIndicator(inkId); }, 100);
+  if (wrap) setTimeout(() => {
+    wrap.scrollTo({ top: wrap.scrollHeight, behavior: 'smooth' });
+    inkUpdatePageIndicator(inkId);
+    inkUpdateScrollbar(inkId);
+  }, 120);
   scheduleInkSavePwork(inkId, problemId);
 }
 
@@ -7778,7 +7926,7 @@ function inkPworkRemoveCanvas(inkId, problemId) {
   const currentH = eng.canvasHeight || INK_CANVAS_STEP;
   if (currentH <= INK_CANVAS_STEP) return;
   inkResizeCanvas(inkId, currentH - INK_CANVAS_STEP);
-  setTimeout(() => inkUpdatePageIndicator(inkId), 100);
+  setTimeout(() => { inkUpdatePageIndicator(inkId); inkUpdateScrollbar(inkId); }, 120);
   scheduleInkSavePwork(inkId, problemId);
 }
 
