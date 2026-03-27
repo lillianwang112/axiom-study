@@ -7786,7 +7786,21 @@ function inkSavePwork(inkId, problemId) {
     p.inkWork = null; p.inkWorkHeight = null;
     deleteInkDoc(inkId);
   } else {
-    const dataUrl = canvas.toDataURL('image/png');
+    // If a selection is active, save a clean composite (background + content, no dashed UI)
+    // so the selection border doesn't get persisted as permanent ink.
+    let saveCanvas = canvas;
+    if (eng.selState === 'selected' && eng._selBgImg && eng._selImageData && eng.selRect) {
+      const dpr = window.devicePixelRatio || 1;
+      const r = eng.selRect;
+      saveCanvas = document.createElement('canvas');
+      saveCanvas.width = canvas.width; saveCanvas.height = canvas.height;
+      const tctx = saveCanvas.getContext('2d');
+      tctx.drawImage(eng._selBgImg, 0, 0, canvas.width, canvas.height);
+      tctx.save(); tctx.setTransform(1, 0, 0, 1, 0, 0);
+      tctx.drawImage(eng._selImageData, r.x * dpr, r.y * dpr, r.w * dpr, r.h * dpr);
+      tctx.restore();
+    }
+    const dataUrl = saveCanvas.toDataURL('image/png');
     p.inkWork = dataUrl;
     p.inkWorkHeight = eng.canvasHeight || 300;
     // Save image to separate Firestore doc (keeps main state doc under 1MB limit)
@@ -7969,7 +7983,21 @@ function inkSave(bodyId, si, bi) {
     course.sections[si].blocks[bi].inkNotesHeight = null;
     deleteInkDoc(inkDocId);
   } else {
-    const dataUrl = canvas.toDataURL('image/png');
+    // If a selection is active, save a clean composite (background + content, no dashed UI)
+    // so the selection border doesn't get persisted as permanent ink.
+    let saveCanvas = canvas;
+    if (eng.selState === 'selected' && eng._selBgImg && eng._selImageData && eng.selRect) {
+      const dpr = window.devicePixelRatio || 1;
+      const r = eng.selRect;
+      saveCanvas = document.createElement('canvas');
+      saveCanvas.width = canvas.width; saveCanvas.height = canvas.height;
+      const tctx = saveCanvas.getContext('2d');
+      tctx.drawImage(eng._selBgImg, 0, 0, canvas.width, canvas.height);
+      tctx.save(); tctx.setTransform(1, 0, 0, 1, 0, 0);
+      tctx.drawImage(eng._selImageData, r.x * dpr, r.y * dpr, r.w * dpr, r.h * dpr);
+      tctx.restore();
+    }
+    const dataUrl = saveCanvas.toDataURL('image/png');
     course.sections[si].blocks[bi].inkNotes = dataUrl;
     course.sections[si].blocks[bi].inkNotesHeight = eng.canvasHeight || 300;
     // Save image to separate Firestore doc (keeps main state doc under 1MB limit)
