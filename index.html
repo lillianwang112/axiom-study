@@ -1256,6 +1256,8 @@
     pointer-events: none;
     z-index: 6;
   }
+  /* Override the base .ink-canvas-wrap canvas background so the selection layer stays transparent */
+  .ink-canvas-wrap canvas.ink-selection-overlay { background: transparent; }
   .ink-color-btn {
     width: 20px; height: 20px; border-radius: 50%;
     border: 2px solid var(--border);
