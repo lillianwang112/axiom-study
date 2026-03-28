@@ -2014,6 +2014,14 @@ let collapsedChapters = {};
 // ── INK ENGINE REGISTRY (declared early, engine code defined later) ──
 const inkEngines = {};
 let _inkLastActiveId = null;
+const _inkSqueezeState = {};
+function inkGetCurrentTool(eng) {
+  if (!eng) return 'pen';
+  if (eng.selTool === 'box') return 'selectBox';
+  if (eng.selTool === 'lasso') return 'selectLasso';
+  if (eng.highlightMode) return 'highlight';
+  return eng.erasing ? 'eraser' : 'pen';
+}
 // Apple Pencil Pro squeeze → toggle eraser.
 // Uses window capture (fires before any element handler) since the barrel-button pointerdown
 // lands on whatever element the pencil hovers over, which may not be the ink canvas.
@@ -2029,7 +2037,28 @@ window.addEventListener('pointerdown', (e) => {
   const targetId = _inkLastActiveId || Object.keys(inkEngines).find(id => inkEngines[id].ctx);
   if (!targetId) return;
   const _eng = inkEngines[targetId];
-  if (_eng) inkSetTool(targetId, _eng.erasing ? 'pen' : 'eraser');
+  if (!_eng) return;
+  if (!_inkSqueezeState[e.pointerId]) {
+    _inkSqueezeState[e.pointerId] = {
+      bodyId: targetId,
+      prevTool: inkGetCurrentTool(_eng),
+    };
+  }
+  if (!_eng.erasing) inkSetTool(targetId, 'eraser');
+}, { capture: true });
+window.addEventListener('pointerup', (e) => {
+  const squeeze = _inkSqueezeState[e.pointerId];
+  if (!squeeze) return;
+  const eng = inkEngines[squeeze.bodyId];
+  if (eng) inkSetTool(squeeze.bodyId, squeeze.prevTool || 'pen');
+  delete _inkSqueezeState[e.pointerId];
+}, { capture: true });
+window.addEventListener('pointercancel', (e) => {
+  const squeeze = _inkSqueezeState[e.pointerId];
+  if (!squeeze) return;
+  const eng = inkEngines[squeeze.bodyId];
+  if (eng) inkSetTool(squeeze.bodyId, squeeze.prevTool || 'pen');
+  delete _inkSqueezeState[e.pointerId];
 }, { capture: true });
 function getInkEngine(bodyId) {
   if (!inkEngines[bodyId]) {
@@ -8016,8 +8045,9 @@ function inkTogglePressure(bodyId) {
 function inkSetTool(bodyId, tool) {
   const eng = getInkEngine(bodyId);
   const wrap = document.getElementById('ink-cw-' + bodyId);
+  const prevTool = inkGetCurrentTool(eng);
   // Commit or discard any active selection when switching tools
-  if (eng.selState && tool !== 'selectBox' && tool !== 'selectLasso') {
+  if (eng.selState && tool !== prevTool) {
     if (eng.selState === 'selected') {
       eng._selCommit();
     } else {
@@ -8521,6 +8551,29 @@ try {
 } catch(e) {}
 
 document.addEventListener('keydown', e => {
+  // Delete selected ink content (Notability-like selection delete).
+  if ((e.key === 'Delete' || e.key === 'Backspace') && e.target.tagName !== 'TEXTAREA' && e.target.tagName !== 'INPUT') {
+    const activeIds = [];
+    if (_inkLastActiveId) activeIds.push(_inkLastActiveId);
+    Object.keys(inkEngines).forEach(id => { if (!activeIds.includes(id)) activeIds.push(id); });
+    for (const id of activeIds) {
+      const eng = inkEngines[id];
+      if (!eng || eng.selState !== 'selected') continue;
+      e.preventDefault();
+      eng.pushUndo();
+      eng._selRestoreBg(); // background already has extracted hole; don't place floating selection
+      eng.selState = null; eng.selRect = null; eng.selPoints = null;
+      eng._selBgImg = null; eng._selImageData = null;
+      eng._selDragStart = null; eng._selDragOrigin = null; eng._selHandle = null;
+      const parts = id.split('-');
+      if (parts.length >= 3) scheduleInkSave(id);
+      else {
+        const problemId = parseInt(id.replace('pwork-', ''));
+        if (!isNaN(problemId)) scheduleInkSavePwork(id, problemId);
+      }
+      break;
+    }
+  }
   // Cmd/Ctrl + Z — undo last action
   if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) {
     if (e.target.tagName !== 'TEXTAREA' && e.target.tagName !== 'INPUT') {
