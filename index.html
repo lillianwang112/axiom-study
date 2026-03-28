@@ -2027,6 +2027,7 @@ let collapsedChapters = {};
 const inkEngines = {};
 let _inkLastActiveId = null;
 const _inkSqueezeState = {};
+const _inkToolBeforeEraser = {};
 function inkGetCurrentTool(eng) {
   if (!eng) return 'pen';
   if (eng.selTool === 'box') return 'selectBox';
@@ -2034,7 +2035,7 @@ function inkGetCurrentTool(eng) {
   if (eng.highlightMode) return 'highlight';
   return eng.erasing ? 'eraser' : 'pen';
 }
-// Apple Pencil Pro squeeze / stylus barrel button → temporarily toggle eraser.
+// Apple Pencil Pro squeeze / stylus barrel button → toggle eraser.
 // Uses window capture (fires before any element handler) since the barrel-button pointerdown
 // lands on whatever element the pencil hovers over, which may not be the ink canvas.
 // Falls back to any initialized engine if no canvas has been drawn on yet.
@@ -2052,30 +2053,24 @@ window.addEventListener('pointerdown', (e) => {
   if (!isPenAuxButtonEvent(e)) return;
   e.preventDefault();   // suppress system default for the squeeze/barrel gesture
   e.stopPropagation();  // prevent the canvas onPointerDown from also firing
+  if (_inkSqueezeState[e.pointerId]) return; // guard against duplicate down events
   const targetId = _inkLastActiveId || Object.keys(inkEngines).find(id => inkEngines[id].ctx);
   if (!targetId) return;
   const _eng = inkEngines[targetId];
   if (!_eng) return;
-  if (!_inkSqueezeState[e.pointerId]) {
-    _inkSqueezeState[e.pointerId] = {
-      bodyId: targetId,
-      prevTool: inkGetCurrentTool(_eng),
-    };
+  _inkSqueezeState[e.pointerId] = { bodyId: targetId };
+  const currentTool = inkGetCurrentTool(_eng);
+  if (currentTool === 'eraser') {
+    inkSetTool(targetId, _inkToolBeforeEraser[targetId] || 'pen');
+  } else {
+    _inkToolBeforeEraser[targetId] = currentTool;
+    inkSetTool(targetId, 'eraser');
   }
-  if (!_eng.erasing) inkSetTool(targetId, 'eraser');
 }, { capture: true });
 window.addEventListener('pointerup', (e) => {
-  const squeeze = _inkSqueezeState[e.pointerId];
-  if (!squeeze) return;
-  const eng = inkEngines[squeeze.bodyId];
-  if (eng) inkSetTool(squeeze.bodyId, squeeze.prevTool || 'pen');
   delete _inkSqueezeState[e.pointerId];
 }, { capture: true });
 window.addEventListener('pointercancel', (e) => {
-  const squeeze = _inkSqueezeState[e.pointerId];
-  if (!squeeze) return;
-  const eng = inkEngines[squeeze.bodyId];
-  if (eng) inkSetTool(squeeze.bodyId, squeeze.prevTool || 'pen');
   delete _inkSqueezeState[e.pointerId];
 }, { capture: true });
 function getInkEngine(bodyId) {
