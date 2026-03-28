@@ -2032,17 +2032,25 @@ function inkGetCurrentTool(eng) {
   if (eng.highlightMode) return 'highlight';
   return eng.erasing ? 'eraser' : 'pen';
 }
-// Apple Pencil Pro squeeze → toggle eraser.
+// Apple Pencil Pro squeeze / stylus barrel button → temporarily toggle eraser.
 // Uses window capture (fires before any element handler) since the barrel-button pointerdown
 // lands on whatever element the pencil hovers over, which may not be the ink canvas.
 // Falls back to any initialized engine if no canvas has been drawn on yet.
 //
-// Detection: Apple Pencil Pro squeeze fires as pointerType 'pen' with button = 5 on most
-// iPadOS versions.  Some versions report button = 1 (middle) instead.  We accept either
-// non-primary pen button (anything other than 0) to be safe.
+// IMPORTANT: Some browser+stylus combinations report pen-tip contact with button=1.
+// To avoid blocking normal drawing, treat it as a barrel/squeeze event only when the
+// primary-tip bit is NOT present in e.buttons.
+function isPenAuxButtonEvent(e) {
+  if (e.pointerType !== 'pen') return false;
+  // Tip contact usually carries pressure; never treat that as auxiliary input.
+  if ((e.pressure || 0) > 0.05) return false;
+  if (e.button === 5) return true; // Apple Pencil Pro squeeze on iPadOS (most versions)
+  if ((e.button === 1 || e.button === 2) && (e.buttons & 1) === 0) return true;
+  return false;
+}
 window.addEventListener('pointerdown', (e) => {
-  if (e.pointerType !== 'pen' || e.button === 0) return; // only non-primary pen buttons
-  e.preventDefault();   // suppress system default for the squeeze gesture
+  if (!isPenAuxButtonEvent(e)) return;
+  e.preventDefault();   // suppress system default for the squeeze/barrel gesture
   e.stopPropagation();  // prevent the canvas onPointerDown from also firing
   const targetId = _inkLastActiveId || Object.keys(inkEngines).find(id => inkEngines[id].ctx);
   if (!targetId) return;
@@ -2373,7 +2381,7 @@ function getInkEngine(bodyId) {
           if ((e.width > 80 || e.height > 80) && e.width > 0 && e.height > 0) { this.isPalm = true; return; }
         }
         // Barrel button / Apple Pencil Pro squeeze is handled by the window-level listener
-        if (e.pointerType === 'pen' && e.button !== 0) return;
+        if (isPenAuxButtonEvent(e)) return;
         if (this._id) _inkLastActiveId = this._id;
         this.isPalm = false;
         this.rect = this.ctx.canvas.getBoundingClientRect();
@@ -7805,7 +7813,16 @@ function initInkCanvasPwork(inkId, problemId) {
     ctx.lineJoin = 'round';
     eng.ctx = ctx;
     eng._id = inkId;
+    // Always start a freshly mounted canvas in pen mode so stale selection state
+    // from a previous render/session cannot silently block drawing.
+    eng.erasing = false;
+    eng.highlightMode = false;
+    eng.selTool = null;
+    eng.selState = null;
+    eng.selRect = null;
+    eng.selPoints = null;
     eng._selEnsureOverlay();
+    if (typeof eng._selClearOverlay === 'function') eng._selClearOverlay();
     inkSyncToolbar(inkId);
     inkUpdatePageIndicator(inkId);
     const _pWrap = document.getElementById('ink-cw-' + inkId);
@@ -7972,7 +7989,16 @@ function initInkCanvas(bodyId) {
     ctx.lineJoin = 'round';
     eng.ctx = ctx;
     eng._id = bodyId;
+    // Always start a freshly mounted canvas in pen mode so stale selection state
+    // from a previous render/session cannot silently block drawing.
+    eng.erasing = false;
+    eng.highlightMode = false;
+    eng.selTool = null;
+    eng.selState = null;
+    eng.selRect = null;
+    eng.selPoints = null;
     eng._selEnsureOverlay();
+    if (typeof eng._selClearOverlay === 'function') eng._selClearOverlay();
     inkSyncToolbar(bodyId);
     inkUpdatePageIndicator(bodyId);
     const _bWrap = document.getElementById('ink-cw-' + bodyId);
