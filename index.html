@@ -1258,6 +1258,35 @@
   }
   /* Override the base .ink-canvas-wrap canvas background so the selection layer stays transparent */
   .ink-canvas-wrap canvas.ink-selection-overlay { background: transparent; }
+  .ink-selection-toolbar {
+    position: absolute;
+    z-index: 25;
+    display: none;
+    align-items: center;
+    gap: 6px;
+    padding: 6px;
+    border-radius: 8px;
+    border: 1px solid var(--border2);
+    background: color-mix(in srgb, var(--bg2) 92%, transparent);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+    backdrop-filter: blur(6px);
+  }
+  .ink-selection-toolbar.open { display: flex; }
+  .ink-selection-toolbar button {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    border-radius: 5px;
+    border: 1px solid var(--border2);
+    background: var(--bg);
+    color: var(--text2);
+    padding: 5px 9px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .ink-selection-toolbar button:hover { border-color: var(--accent); color: var(--accent); }
+  .ink-selection-toolbar button.danger:hover { border-color: var(--red); color: var(--red); }
   .ink-color-btn {
     width: 20px; height: 20px; border-radius: 50%;
     border: 2px solid var(--border);
@@ -2047,6 +2076,9 @@ function isPenAuxButtonEvent(e) {
   if (e.pointerType !== 'pen') return false;
   if (e.button === 5) return true; // Apple Pencil Pro squeeze on iPadOS (most versions)
   if ((e.button === 1 || e.button === 2) && (e.buttons & 1) === 0) return true;
+  const nonPrimaryButtons = (e.buttons || 0) & ~1;
+  if (nonPrimaryButtons !== 0 && (e.buttons & 1) === 0) return true;
+  if ((e.button === 0 || e.button === -1) && e.pressure === 0 && nonPrimaryButtons !== 0) return true;
   return false;
 }
 window.addEventListener('pointerdown', (e) => {
@@ -2110,6 +2142,7 @@ function getInkEngine(bodyId) {
       _selHandle: null,   // 'nw'|'ne'|'sw'|'se'|null for resize
       _selOverlay: null,  // overlay canvas for temporary selection UI
       _selOverlayCtx: null,
+      _selToolbar: null,  // floating selection action toolbar
       coords(e) {
         const r = this.rect;
         const canvas = this.ctx.canvas;
@@ -2248,6 +2281,45 @@ function getInkEngine(bodyId) {
         octx.setTransform(1, 0, 0, 1, 0, 0);
         octx.clearRect(0, 0, this._selOverlay.width, this._selOverlay.height);
       },
+      _selEnsureToolbar() {
+        if (!this._id) return null;
+        const wrap = document.getElementById('ink-cw-' + this._id);
+        if (!wrap) return null;
+        let tb = this._selToolbar || wrap.querySelector('.ink-selection-toolbar');
+        if (!tb) {
+          tb = document.createElement('div');
+          tb.className = 'ink-selection-toolbar';
+          tb.innerHTML = `
+            <button type="button" onclick="inkDuplicateSelection('${this._id}')">Duplicate</button>
+            <button type="button" class="danger" onclick="inkDeleteSelection('${this._id}')">Delete</button>
+            <button type="button" onclick="inkCommitSelection('${this._id}')">Done</button>
+          `;
+          wrap.appendChild(tb);
+        } else if (tb.parentElement !== wrap) {
+          wrap.appendChild(tb);
+        }
+        this._selToolbar = tb;
+        return tb;
+      },
+      _selHideToolbar() {
+        const tb = this._selEnsureToolbar();
+        if (tb) tb.classList.remove('open');
+      },
+      _selShowToolbar() {
+        if (this.selState !== 'selected' || !this.selRect) return;
+        const tb = this._selEnsureToolbar();
+        if (!tb) return;
+        tb.classList.add('open');
+        const wrap = document.getElementById('ink-cw-' + this._id);
+        if (!wrap) return;
+        const margin = 8;
+        const top = Math.max(margin, this.selRect.y - tb.offsetHeight - margin);
+        const leftRaw = this.selRect.x + (this.selRect.w / 2) - (tb.offsetWidth / 2);
+        const maxLeft = Math.max(margin, wrap.clientWidth - tb.offsetWidth - margin);
+        const left = Math.min(Math.max(margin, leftRaw), maxLeft);
+        tb.style.left = `${left}px`;
+        tb.style.top = `${top}px`;
+      },
       _selDrawUI() {
         if (!this.selRect || !this.ctx) return;
         const octx = this._selEnsureOverlay();
@@ -2280,6 +2352,7 @@ function getInkEngine(bodyId) {
           ctx.strokeRect(hx - hs/2, hy - hs/2, hs, hs);
         });
         ctx.restore();
+        this._selShowToolbar();
       },
       _selRestoreBg() {
         if (!this._selBgImg || !this.ctx) return;
@@ -2370,6 +2443,7 @@ function getInkEngine(bodyId) {
         this._selBgImg = null; this._selImageData = null;
         this._selDragStart = null; this._selDragOrigin = null; this._selHandle = null;
         this._selClearOverlay();
+        this._selHideToolbar();
       },
       onPointerDown(e) {
         if (e.pointerType === 'touch') {
@@ -2405,6 +2479,7 @@ function getInkEngine(bodyId) {
           // Start drawing selection
           this.pushUndo();
           this._selClearOverlay();
+          this._selHideToolbar();
           // Snapshot background for live move preview
           const bgSnap = document.createElement('canvas');
           bgSnap.width = this.ctx.canvas.width; bgSnap.height = this.ctx.canvas.height;
@@ -2545,11 +2620,12 @@ function getInkEngine(bodyId) {
               this.selState = null; this.selRect = null; this.selPoints = null;
               this._selBgImg = null;
               this._selClearOverlay();
+              this._selHideToolbar();
             } else {
               this._selExtract();
               this._selRestoreBg();
-              this._selDrawUI();
               this.selState = 'selected';
+              this._selDrawUI();
             }
           } else if (this.selState === 'selected') {
             this._selDragStart = null;
@@ -8139,6 +8215,7 @@ function inkSetTool(bodyId, tool) {
   eng.highlightMode = (tool === 'highlight');
   eng.selTool       = (tool === 'selectBox') ? 'box' : (tool === 'selectLasso') ? 'lasso' : null;
   if (!eng.selTool && typeof eng._selClearOverlay === 'function') eng._selClearOverlay();
+  if (!eng.selTool && typeof eng._selHideToolbar === 'function') eng._selHideToolbar();
   if (wrap) wrap.classList.toggle('eraser-mode', eng.erasing);
   if (wrap) wrap.classList.toggle('selection-mode', !!eng.selTool);
   if (penBtn)       penBtn.classList.toggle('active',       tool === 'pen');
@@ -8158,6 +8235,56 @@ function inkCommitSelection(bodyId) {
     const problemId = parseInt(bodyId.replace('pwork-', ''));
     if (!isNaN(problemId)) scheduleInkSavePwork(bodyId, problemId);
   }
+}
+
+function inkDeleteSelection(bodyId) {
+  const eng = inkEngines[bodyId];
+  if (!eng || eng.selState !== 'selected') return false;
+  eng.pushUndo();
+  eng._selRestoreBg(); // background already has extracted hole; don't place floating selection
+  eng.selState = null; eng.selRect = null; eng.selPoints = null;
+  eng._selBgImg = null; eng._selImageData = null;
+  eng._selDragStart = null; eng._selDragOrigin = null; eng._selHandle = null;
+  if (typeof eng._selClearOverlay === 'function') eng._selClearOverlay();
+  if (typeof eng._selHideToolbar === 'function') eng._selHideToolbar();
+  const parts = bodyId.split('-');
+  if (parts.length >= 3) scheduleInkSave(bodyId);
+  else {
+    const problemId = parseInt(bodyId.replace('pwork-', ''));
+    if (!isNaN(problemId)) scheduleInkSavePwork(bodyId, problemId);
+  }
+  return true;
+}
+
+function inkDuplicateSelection(bodyId) {
+  const eng = inkEngines[bodyId];
+  if (!eng || eng.selState !== 'selected' || !eng._selImageData || !eng.selRect || !eng.ctx) return false;
+  eng.pushUndo();
+  const dpr = window.devicePixelRatio || 1;
+  const r = eng.selRect;
+  const canvasCssW = eng.ctx.canvas.width / dpr;
+  const canvasCssH = eng.ctx.canvas.height / dpr;
+  const offset = 22;
+  const dx = Math.max(0, Math.min(offset, canvasCssW - (r.x + r.w)));
+  const dy = Math.max(0, Math.min(offset, canvasCssH - (r.y + r.h)));
+  eng._selRestoreBg();
+  eng.ctx.save();
+  eng.ctx.setTransform(1, 0, 0, 1, 0, 0);
+  eng.ctx.drawImage(eng._selImageData, r.x * dpr, r.y * dpr, r.w * dpr, r.h * dpr);
+  eng.ctx.drawImage(eng._selImageData, (r.x + dx) * dpr, (r.y + dy) * dpr, r.w * dpr, r.h * dpr);
+  eng.ctx.restore();
+  eng.selState = null; eng.selRect = null; eng.selPoints = null;
+  eng._selBgImg = null; eng._selImageData = null;
+  eng._selDragStart = null; eng._selDragOrigin = null; eng._selHandle = null;
+  if (typeof eng._selClearOverlay === 'function') eng._selClearOverlay();
+  if (typeof eng._selHideToolbar === 'function') eng._selHideToolbar();
+  const parts = bodyId.split('-');
+  if (parts.length >= 3) scheduleInkSave(bodyId);
+  else {
+    const problemId = parseInt(bodyId.replace('pwork-', ''));
+    if (!isNaN(problemId)) scheduleInkSavePwork(bodyId, problemId);
+  }
+  return true;
 }
 
 function inkSetSize(bodyId, sizeIdx, el) {
@@ -8625,20 +8752,8 @@ document.addEventListener('keydown', e => {
     if (_inkLastActiveId) activeIds.push(_inkLastActiveId);
     Object.keys(inkEngines).forEach(id => { if (!activeIds.includes(id)) activeIds.push(id); });
     for (const id of activeIds) {
-      const eng = inkEngines[id];
-      if (!eng || eng.selState !== 'selected') continue;
+      if (!inkDeleteSelection(id)) continue;
       e.preventDefault();
-      eng.pushUndo();
-      eng._selRestoreBg(); // background already has extracted hole; don't place floating selection
-      eng.selState = null; eng.selRect = null; eng.selPoints = null;
-      eng._selBgImg = null; eng._selImageData = null;
-      eng._selDragStart = null; eng._selDragOrigin = null; eng._selHandle = null;
-      const parts = id.split('-');
-      if (parts.length >= 3) scheduleInkSave(id);
-      else {
-        const problemId = parseInt(id.replace('pwork-', ''));
-        if (!isNaN(problemId)) scheduleInkSavePwork(id, problemId);
-      }
       break;
     }
   }
