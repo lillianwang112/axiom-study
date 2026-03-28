@@ -2535,7 +2535,7 @@ function getInkEngine(bodyId) {
         if (pts.length > 0) this.flushPts(pts);
       },
       onPointerUp(e) {
-        if (e.pointerId !== this.activePointerId) return;
+        if (e.pointerId !== this.activePointerId) return false;
 
         // ── Selection finalize ──
         if (this.selTool) {
@@ -2565,7 +2565,7 @@ function getInkEngine(bodyId) {
             this._selDrawUI();
           }
           this.activePointerId = null;
-          return;
+          return true;
         }
 
         // ── Drawing mode ──
@@ -2579,8 +2579,9 @@ function getInkEngine(bodyId) {
         // Clean up highlight scratch data
         this._hlOffscreen = null;
         this._hlPts = [];
+        return true;
       },
-      onPointerCancel(e) { this.onPointerUp(e); },
+      onPointerCancel(e) { return this.onPointerUp(e); },
     };
   }
   return inkEngines[bodyId];
@@ -7844,7 +7845,10 @@ function initInkCanvasPwork(inkId, problemId) {
     // Attach pointer listeners
     const pd = (e) => eng.onPointerDown(e);
     const pm = (e) => eng.onPointerMove(e);
-    const pu = (e) => { eng.onPointerUp(e); if (!eng.isDrawing) scheduleInkSavePwork(inkId, problemId); };
+    const pu = (e) => {
+      const handled = eng.onPointerUp(e);
+      if (handled) scheduleInkSavePwork(inkId, problemId);
+    };
     const pc = (e) => eng.onPointerCancel(e);
     const noScroll = (e) => { if (eng.isDrawing || eng.selState === 'drawing') e.preventDefault(); };
     canvas.addEventListener('pointerdown',   pd);
@@ -8001,7 +8005,10 @@ function initInkCanvas(bodyId) {
     const pNoOpts = { passive: false };
     const pd = (e) => eng.onPointerDown(e);
     const pm = (e) => eng.onPointerMove(e);
-    const pu = (e) => { eng.onPointerUp(e); scheduleInkSave(bodyId); };
+    const pu = (e) => {
+      const handled = eng.onPointerUp(e);
+      if (handled) scheduleInkSave(bodyId);
+    };
     const pc = (e) => eng.onPointerCancel(e);
     const noScroll = (e) => { if (eng.isDrawing || eng.selState === 'drawing') e.preventDefault(); };
     on('pointerdown',   pd);
