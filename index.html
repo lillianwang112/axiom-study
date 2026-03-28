@@ -1246,6 +1246,16 @@
     user-select: none;
     background: var(--bg);
   }
+  .ink-selection-overlay {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: auto;
+    background: transparent;
+    pointer-events: none;
+    z-index: 6;
+  }
   .ink-color-btn {
     width: 20px; height: 20px; border-radius: 50%;
     border: 2px solid var(--border);
@@ -2095,6 +2105,8 @@ function getInkEngine(bodyId) {
       _selDragStart: null,// { x, y } pointer coords at drag start
       _selDragOrigin: null,// { x, y } selRect origin at drag start
       _selHandle: null,   // 'nw'|'ne'|'sw'|'se'|null for resize
+      _selOverlay: null,  // overlay canvas for temporary selection UI
+      _selOverlayCtx: null,
       coords(e) {
         const r = this.rect;
         const canvas = this.ctx.canvas;
@@ -2203,19 +2215,53 @@ function getInkEngine(bodyId) {
         this.currentStroke = { lastPt, lastMidPt };
       },
       // ── Selection helpers ──
+      _selEnsureOverlay() {
+        if (!this._id || !this.ctx) return null;
+        const wrap = document.getElementById('ink-cw-' + this._id);
+        const base = this.ctx.canvas;
+        if (!wrap || !base) return null;
+        let ov = this._selOverlay || document.getElementById('ink-selov-' + this._id);
+        if (!ov) {
+          ov = document.createElement('canvas');
+          ov.id = 'ink-selov-' + this._id;
+          ov.className = 'ink-selection-overlay';
+          wrap.appendChild(ov);
+        } else if (ov.parentElement !== wrap) {
+          wrap.appendChild(ov);
+        }
+        ov.width = base.width;
+        ov.height = base.height;
+        ov.style.height = base.style.height || ((base.height / (window.devicePixelRatio || 1)) + 'px');
+        const octx = ov.getContext('2d');
+        octx.setTransform(1, 0, 0, 1, 0, 0);
+        octx.clearRect(0, 0, ov.width, ov.height);
+        this._selOverlay = ov;
+        this._selOverlayCtx = octx;
+        return octx;
+      },
+      _selClearOverlay() {
+        const octx = this._selEnsureOverlay();
+        if (!octx || !this._selOverlay) return;
+        octx.setTransform(1, 0, 0, 1, 0, 0);
+        octx.clearRect(0, 0, this._selOverlay.width, this._selOverlay.height);
+      },
       _selDrawUI() {
         if (!this.selRect || !this.ctx) return;
-        const ctx = this.ctx; const r = this.selRect;
+        const octx = this._selEnsureOverlay();
+        if (!octx) return;
+        this._selClearOverlay();
+        const ctx = octx; const r = this.selRect;
+        const dpr = window.devicePixelRatio || 1;
         // Draw floating selection content
         if (this._selImageData) {
           ctx.save();
           ctx.setTransform(1, 0, 0, 1, 0, 0);
-          const dpr = window.devicePixelRatio || 1;
           ctx.drawImage(this._selImageData, r.x * dpr, r.y * dpr, r.w * dpr, r.h * dpr);
           ctx.restore();
         }
         // Dashed selection border + handles
         ctx.save();
+        ctx.scale(dpr, dpr);
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
         ctx.strokeStyle = '#2a86ff';
@@ -2239,6 +2285,7 @@ function getInkEngine(bodyId) {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(this._selBgImg, 0, 0, canvas.width, canvas.height);
         ctx.restore();
+        this._selClearOverlay();
       },
       _selHitHandle(px, py) {
         if (!this.selRect) return null;
@@ -2319,6 +2366,7 @@ function getInkEngine(bodyId) {
         this.selState = null; this.selRect = null; this.selPoints = null;
         this._selBgImg = null; this._selImageData = null;
         this._selDragStart = null; this._selDragOrigin = null; this._selHandle = null;
+        this._selClearOverlay();
       },
       onPointerDown(e) {
         if (e.pointerType === 'touch') {
@@ -2353,6 +2401,7 @@ function getInkEngine(bodyId) {
           }
           // Start drawing selection
           this.pushUndo();
+          this._selClearOverlay();
           // Snapshot background for live move preview
           const bgSnap = document.createElement('canvas');
           bgSnap.width = this.ctx.canvas.width; bgSnap.height = this.ctx.canvas.height;
@@ -2417,8 +2466,11 @@ function getInkEngine(bodyId) {
           }
           // Redraw background + selection outline
           this._selRestoreBg();
-          const ctx = this.ctx; const r = this.selRect;
-          ctx.save(); ctx.strokeStyle = '#2a86ff'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+          const ctx = this._selEnsureOverlay(); const r = this.selRect;
+          if (!ctx) return;
+          const dpr = window.devicePixelRatio || 1;
+          this._selClearOverlay();
+          ctx.save(); ctx.scale(dpr, dpr); ctx.strokeStyle = '#2a86ff'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
           if (this.selTool === 'lasso' && this.selPoints && this.selPoints.length > 1) {
             ctx.beginPath();
             ctx.moveTo(this.selPoints[0].x, this.selPoints[0].y);
@@ -2489,6 +2541,7 @@ function getInkEngine(bodyId) {
               this._selRestoreBg();
               this.selState = null; this.selRect = null; this.selPoints = null;
               this._selBgImg = null;
+              this._selClearOverlay();
             } else {
               this._selExtract();
               this._selRestoreBg();
@@ -7752,6 +7805,7 @@ function initInkCanvasPwork(inkId, problemId) {
     ctx.lineJoin = 'round';
     eng.ctx = ctx;
     eng._id = inkId;
+    eng._selEnsureOverlay();
     inkSyncToolbar(inkId);
     inkUpdatePageIndicator(inkId);
     const _pWrap = document.getElementById('ink-cw-' + inkId);
@@ -7918,6 +7972,7 @@ function initInkCanvas(bodyId) {
     ctx.lineJoin = 'round';
     eng.ctx = ctx;
     eng._id = bodyId;
+    eng._selEnsureOverlay();
     inkSyncToolbar(bodyId);
     inkUpdatePageIndicator(bodyId);
     const _bWrap = document.getElementById('ink-cw-' + bodyId);
@@ -8073,6 +8128,7 @@ function inkSetTool(bodyId, tool) {
   eng.erasing       = (tool === 'eraser');
   eng.highlightMode = (tool === 'highlight');
   eng.selTool       = (tool === 'selectBox') ? 'box' : (tool === 'selectLasso') ? 'lasso' : null;
+  if (!eng.selTool && typeof eng._selClearOverlay === 'function') eng._selClearOverlay();
   if (wrap) wrap.classList.toggle('eraser-mode', eng.erasing);
   if (wrap) wrap.classList.toggle('selection-mode', !!eng.selTool);
   if (penBtn)       penBtn.classList.toggle('active',       tool === 'pen');
@@ -8365,6 +8421,8 @@ function inkResizeCanvas(bodyId, newHeightCss) {
   canvas.height = newHeightCss * dpr;
   canvas.style.height = newHeightCss + 'px';
   eng.canvasHeight = newHeightCss;
+  if (typeof eng._selEnsureOverlay === 'function') eng._selEnsureOverlay();
+  if (typeof eng._selClearOverlay === 'function') eng._selClearOverlay();
   // Re-apply context settings lost on resize
   const ctx = eng.ctx;
   ctx.scale(dpr, dpr);
